@@ -1,0 +1,250 @@
+name: Booking360 Backend Deploy
+
+permissions:
+  contents: read
+  id-token: write
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: booking360-backend-production
+  cancel-in-progress: false
+
+env:
+  INFISICAL_API_URL: https://keys.hmz.one
+  INFISICAL_PROJECT_SLUG: infra-7-yf9
+  INFISICAL_IDENTITY_ID: 06f616b2-9fa0-4094-9cec-388ef8e373c1
+  INFISICAL_ENV_SLUG: prod
+  INFISICAL_DEPLOY_SHARED_PATH: /booking360/deploy/shared
+  INFISICAL_RUNTIME_PATH: /booking360/production/backend
+  IMAGE_REPO: vviebal/booking360-backend
+  DEFAULT_RELEASE_DIR: /opt/apps/booking360
+  API_DOMAIN: api-book360.hmz.one
+  FRONTEND_DOMAIN: book360.hmz.one
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore Booking360.slnx
+
+      - name: Build
+        run: dotnet build Booking360.slnx --no-restore --configuration Release /p:OpenApiGenerateDocuments=false
+
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - build
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - 3rd
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve backend image tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::12}"
+          echo "image_tag=${IMAGE_REPO}:production-${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch Docker Hub credentials from Infisical
+        uses: Infisical/secrets-action@v1.0.12
+        with:
+          method: "oidc"
+          identity-id: ${{ env.INFISICAL_IDENTITY_ID }}
+          oidc-audience: "https://github.com/V-Viebal"
+          project-slug: ${{ env.INFISICAL_PROJECT_SLUG }}
+          env-slug: ${{ env.INFISICAL_ENV_SLUG }}
+          domain: ${{ env.INFISICAL_API_URL }}
+          secret-path: ${{ env.INFISICAL_DEPLOY_SHARED_PATH }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image_tag }}
+            ${{ env.IMAGE_REPO }}:production
+
+      - name: Fetch runtime env file from Infisical
+        uses: Infisical/secrets-action@v1.0.12
+        with:
+          method: "oidc"
+          identity-id: ${{ env.INFISICAL_IDENTITY_ID }}
+          oidc-audience: "https://github.com/V-Viebal"
+          project-slug: ${{ env.INFISICAL_PROJECT_SLUG }}
+          env-slug: ${{ env.INFISICAL_ENV_SLUG }}
+          domain: ${{ env.INFISICAL_API_URL }}
+          secret-path: ${{ env.INFISICAL_RUNTIME_PATH }}
+          export-type: "file"
+          file-output-path: "runtime.env"
+
+      - name: Prepare release inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="${DEFAULT_RELEASE_DIR}"
+          runtime_source=""
+
+          for candidate in \
+            "./runtime.env" \
+            "../runtime.env" \
+            "../$(basename "$PWD")runtime.env"
+          do
+            if [ -f "$candidate" ]; then
+              runtime_source="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$runtime_source" ]; then
+            runtime_source="$(find .. -maxdepth 1 -type f -name '*runtime.env' | head -n 1 || true)"
+          fi
+
+          if [ -z "$runtime_source" ]; then
+            echo "Failed to locate exported runtime env file"
+            ls -la .
+            ls -la ..
+            exit 1
+          fi
+
+          mkdir -p "${release_dir}"
+          mv "$runtime_source" "${release_dir}/.env.backend.runtime"
+          touch "${release_dir}/.env.frontend.runtime"
+          current_frontend_image="$(docker inspect --format '{{.Config.Image}}' booking360-frontend 2>/dev/null || true)"
+          if [ -z "${current_frontend_image}" ]; then
+            current_frontend_image="vviebal/booking360-frontend:production"
+          fi
+          echo "RELEASE_DIR=${release_dir}" >> "$GITHUB_ENV"
+          echo "BACKEND_IMAGE_TAG=${{ steps.meta.outputs.image_tag }}" >> "$GITHUB_ENV"
+          echo "CURRENT_FRONTEND_IMAGE=${current_frontend_image}" >> "$GITHUB_ENV"
+
+      - name: Write deploy compose file
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "${RELEASE_DIR}/compose.deploy.yml" <<EOF
+          services:
+            booking360-backend:
+              image: ${BACKEND_IMAGE_TAG}
+              container_name: booking360-backend
+              restart: unless-stopped
+              extra_hosts:
+                - "host.docker.internal:host-gateway"
+              env_file:
+                - .env.backend.runtime
+              environment:
+                ASPNETCORE_URLS: http://+:8101
+                ASPNETCORE_ENVIRONMENT: Production
+                APP_ENV_PREFIX: BOOKING360
+                APP_FRONTEND_URL: https://${FRONTEND_DOMAIN}
+              labels:
+                - "traefik.enable=true"
+                - "traefik.docker.network=coolify"
+                - "traefik.http.routers.booking360-backend.rule=Host(\`${API_DOMAIN}\`)"
+                - "traefik.http.routers.booking360-backend.entrypoints=https"
+                - "traefik.http.routers.booking360-backend.tls=true"
+                - "traefik.http.routers.booking360-backend.tls.certresolver=letsencrypt"
+                - "traefik.http.services.booking360-backend.loadbalancer.server.port=8101"
+              networks:
+                - coolify
+
+            booking360-frontend:
+              image: ${CURRENT_FRONTEND_IMAGE}
+              container_name: booking360-frontend
+              restart: unless-stopped
+              env_file:
+                - .env.frontend.runtime
+              environment:
+                NODE_ENV: production
+                HOST: 0.0.0.0
+                PORT: 4101
+              labels:
+                - "traefik.enable=true"
+                - "traefik.docker.network=coolify"
+                - "traefik.http.routers.booking360-frontend.rule=Host(\`${FRONTEND_DOMAIN}\`)"
+                - "traefik.http.routers.booking360-frontend.entrypoints=https"
+                - "traefik.http.routers.booking360-frontend.tls=true"
+                - "traefik.http.routers.booking360-frontend.tls.certresolver=letsencrypt"
+                - "traefik.http.services.booking360-frontend.loadbalancer.server.port=4101"
+              networks:
+                - coolify
+
+          networks:
+            coolify:
+              external: true
+          EOF
+
+      - name: Pull and start backend release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${RELEASE_DIR}"
+          docker pull "${BACKEND_IMAGE_TAG}"
+          docker rm -f booking360-backend >/dev/null 2>&1 || true
+          docker compose -f compose.deploy.yml up -d --no-deps --force-recreate booking360-backend
+
+      - name: Health check
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if curl -kfsSL --resolve "${API_DOMAIN}:443:127.0.0.1" "https://${API_DOMAIN}/api/health"; then
+              break
+            fi
+
+            if [ "$attempt" -eq 60 ]; then
+              echo "Local Traefik health check failed after ${attempt} attempts"
+              docker logs --tail 120 booking360-backend || true
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+  verify:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - deploy
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+      - 3rd
+    steps:
+      - name: Verify health endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          response="$(curl -fsSL "https://${API_DOMAIN}/api/health")"
+          echo "$response"
+          echo "$response" | grep -qiE 'ok|healthy'

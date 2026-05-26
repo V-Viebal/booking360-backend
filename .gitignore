@@ -1,0 +1,13 @@
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+.vs/
+.idea/
+*.cache
+artifacts/
+.tmp/
+.env
+.env.*
+!.env.example
+TestResults/
