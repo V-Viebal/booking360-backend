@@ -1,28 +1,178 @@
-var builder = WebApplication.CreateBuilder(args);
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Microsoft.AspNetCore.Http.Json;
+using Booking360.Api.Extensions;
+using Booking360.Api.Infrastructure;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.IdentityModel.Tokens;
+using Minio;
+using Npgsql;
+using Scalar.AspNetCore;
+using Serilog;
 
-builder.Services.AddControllers();
-builder.Services.AddOpenApi();
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .WriteTo.Console()
+    .CreateBootstrapLogger();
 
-var envPrefix = Environment.GetEnvironmentVariable("APP_ENV_PREFIX") ?? "BOOKING360";
-var frontendUrl = Environment.GetEnvironmentVariable("APP_FRONTEND_URL")
-    ?? Environment.GetEnvironmentVariable($"{envPrefix}_FRONTEND_URL")
-    ?? "http://localhost:4200";
-
-builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
-    .WithOrigins(frontendUrl)
-    .AllowAnyHeader()
-    .AllowAnyMethod()
-    .AllowCredentials()));
-
-var app = builder.Build();
-
-if (app.Environment.IsDevelopment())
+try
 {
-    app.MapOpenApi();
+    var builder = WebApplication.CreateBuilder(args);
+
+    // Workspace .env loader for local dev
+    if (builder.Environment.IsDevelopment())
+    {
+        var envValues = WorkspaceEnvLoader.LoadNearest(builder.Environment.ContentRootPath);
+        if (envValues.Count > 0)
+        {
+            builder.Configuration.AddInMemoryCollection(envValues);
+        }
+    }
+
+    builder.Host.UseSerilog((context, services, config) =>
+    {
+        config.ReadFrom.Configuration(context.Configuration)
+              .ReadFrom.Services(services)
+              .Enrich.FromLogContext()
+              .WriteTo.Console();
+    });
+
+    builder.Services.Configure<JsonOptions>(options =>
+    {
+        options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+        options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+    });
+
+    builder.Services.Configure<FormOptions>(options =>
+    {
+        options.MultipartBodyLengthLimit = 200L * 1024 * 1024; // 200 MB upload ceiling
+    });
+
+    var booking360Options = Booking360Options.Load(builder.Configuration, builder.Environment);
+    builder.Services.AddSingleton(booking360Options);
+
+    // Postgres
+    var dataSourceBuilder = new NpgsqlDataSourceBuilder(booking360Options.DatabaseConnectionString);
+    var dataSource = dataSourceBuilder.Build();
+    builder.Services.AddSingleton(dataSource);
+    builder.Services.AddSingleton<Booking360Database>();
+
+    // MinIO
+    builder.Services.AddSingleton<IMinioClient>(_ =>
+        new MinioClient()
+            .WithEndpoint(booking360Options.MinioEndpoint)
+            .WithCredentials(booking360Options.MinioAccessKey, booking360Options.MinioSecretKey)
+            .WithSSL(booking360Options.MinioSecure)
+            .Build());
+    builder.Services.AddSingleton<Booking360ObjectStorageService>();
+
+    // Mail
+    builder.Services.AddSingleton<IBooking360MailService, Booking360MailService>();
+
+    // Auth (Logto JWT bearer)
+    builder.Services.AddHttpClient("logto-userinfo")
+        .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(8));
+    builder.Services.AddSingleton<Booking360PrincipalSync>();
+
+    builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        .AddJwtBearer(options =>
+        {
+            options.Authority = booking360Options.AuthIssuer;
+            options.MetadataAddress = $"{booking360Options.AuthIssuer.TrimEnd('/')}/.well-known/openid-configuration";
+            options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
+            options.MapInboundClaims = false;
+            options.TokenValidationParameters = new TokenValidationParameters
+            {
+                ValidateIssuer = true,
+                ValidIssuer = booking360Options.AuthIssuer,
+                ValidateAudience = true,
+                ValidAudiences = new[] { booking360Options.ApiResourceIndicator },
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
+                NameClaimType = "sub",
+                RoleClaimType = "roles"
+            };
+            options.Events = new JwtBearerEvents
+            {
+                OnTokenValidated = async context =>
+                {
+                    if (context.Principal is null)
+                    {
+                        return;
+                    }
+                    var token = context.SecurityToken is Microsoft.IdentityModel.JsonWebTokens.JsonWebToken jwt
+                        ? jwt.EncodedToken
+                        : context.Request.Headers.Authorization.ToString().Replace("Bearer ", string.Empty, StringComparison.OrdinalIgnoreCase);
+                    var sync = context.HttpContext.RequestServices.GetRequiredService<Booking360PrincipalSync>();
+                    await sync.EnrichAsync(context.Principal, token, context.HttpContext.RequestAborted);
+                }
+            };
+        });
+
+    builder.Services.AddAuthorization(options =>
+    {
+        options.AddPolicy("Admin", policy =>
+            policy.RequireAssertion(context =>
+                context.User.HasRoleOrScope("Admin", "admin:all")));
+    });
+
+    builder.Services.AddCors(options =>
+    {
+        options.AddDefaultPolicy(policy =>
+        {
+            policy.WithOrigins(booking360Options.AllowedOrigins.ToArray())
+                  .AllowAnyHeader()
+                  .AllowAnyMethod()
+                  .AllowCredentials();
+        });
+    });
+
+    builder.Services.AddOpenApi();
+    builder.Services.AddEndpoints(typeof(Program).Assembly);
+
+    var app = builder.Build();
+
+    using (var scope = app.Services.CreateScope())
+    {
+        var database = scope.ServiceProvider.GetRequiredService<Booking360Database>();
+        await database.InitializeAsync();
+
+        var storage = scope.ServiceProvider.GetRequiredService<Booking360ObjectStorageService>();
+        try
+        {
+            await storage.EnsureBucketExistsAsync();
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Failed to ensure MinIO bucket on startup; will retry on first upload");
+        }
+    }
+
+    app.UseSerilogRequestLogging();
+    app.UseCors();
+
+    if (app.Environment.IsDevelopment())
+    {
+        app.MapOpenApi();
+        app.MapScalarApiReference();
+    }
+
+    app.UseAuthentication();
+    app.UseAuthorization();
+
+    app.MapEndpoints();
+
+    app.Run();
+}
+catch (Exception ex)
+{
+    Log.Fatal(ex, "Booking360 API terminated unexpectedly");
+    throw;
+}
+finally
+{
+    Log.CloseAndFlush();
 }
 
-app.UseCors();
-app.UseAuthorization();
-app.MapControllers();
-
-app.Run();
+public partial class Program;
