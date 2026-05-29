@@ -456,11 +456,11 @@ public sealed partial class Booking360Database
         command.Parameters.AddWithValue("status", status);
         if (pausedUntil.HasValue && string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase))
         {
-            command.Parameters.AddWithValue("paused_until", pausedUntil.Value.UtcDateTime);
+            command.Parameters.Add(new NpgsqlParameter("paused_until", NpgsqlTypes.NpgsqlDbType.TimestampTz) { Value = pausedUntil.Value.UtcDateTime });
         }
         else
         {
-            command.Parameters.AddWithValue("paused_until", DBNull.Value);
+            command.Parameters.Add(new NpgsqlParameter("paused_until", NpgsqlTypes.NpgsqlDbType.TimestampTz) { Value = DBNull.Value });
         }
         var rows = await command.ExecuteNonQueryAsync(cancellationToken);
         return rows > 0;
