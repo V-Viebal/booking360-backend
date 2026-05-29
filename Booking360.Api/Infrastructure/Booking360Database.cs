@@ -381,6 +381,37 @@ public sealed partial class Booking360Database
                 on zalo_oa_events(zalo_id, created_at desc);
             """,
             cancellationToken);
+
+        await ApplyMigrationAsync(
+            connection,
+            "008_w12_shop_recovery",
+            """
+            -- W12: Shop owner self-service recovery.
+            -- Owners who lose their /shop/m/{token} link can request a 6-digit code by
+            -- providing the shop phone (already on file). The code is delivered via the
+            -- configured notification channel (zns/sms/email/log) and, when claimed,
+            -- rotates shop_access_token so the magic link is fresh.
+            --
+            -- Rate-limited: at most 3 active codes per phone in a 15-minute window.
+            create table if not exists shop_recovery_codes (
+                id uuid primary key default gen_random_uuid(),
+                shop_id uuid not null references shops(id) on delete cascade,
+                phone text not null,
+                code text not null,
+                expires_at timestamptz not null,
+                claimed_at timestamptz,
+                request_ip inet,
+                attempt_count int not null default 0,
+                created_at timestamptz not null default timezone('utc', now())
+            );
+            create index if not exists idx_shop_recovery_phone_created
+                on shop_recovery_codes(phone, created_at desc);
+            create index if not exists idx_shop_recovery_shop
+                on shop_recovery_codes(shop_id, created_at desc);
+            create unique index if not exists ux_shop_recovery_pending
+                on shop_recovery_codes(code) where claimed_at is null;
+            """,
+            cancellationToken);
     }
     private static async Task ApplyMigrationAsync(NpgsqlConnection connection, string version, string script, CancellationToken cancellationToken)
     {
