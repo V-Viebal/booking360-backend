@@ -72,6 +72,7 @@ public sealed class ShopsEndpoint : IEndpoint
 
             return Results.Created($"/api/public/shops/{Uri.EscapeDataString(record.Slug)}", new
             {
+                id = record.Id,
                 slug = record.Slug,
                 shopAccessToken = record.ShopAccessToken,
                 managementUrl = $"/shop/m/{record.ShopAccessToken}",
