@@ -335,6 +335,52 @@ public sealed partial class Booking360Database
             create index if not exists idx_shops_district on shops(district) where district is not null;
             """,
             cancellationToken);
+
+        await ApplyMigrationAsync(
+            connection,
+            "007_w11_zalo_oa",
+            """
+            -- W11: Zalo Official Account integration scaffold.
+            -- Maps OA user_id (zalo_id) -> shop_id so OA chat commands can authenticate to a shop.
+            -- Linking flow: shop owner taps "Liên kết Zalo OA" on /shop/m/{token}, gets a 6-digit
+            -- pairing code, sends it to the OA -> webhook claims the code -> mapping persisted.
+            -- Webhook + command parser are wired regardless of OA approval; they no-op until the
+            -- BOOK360_ZALO_OA_ENABLED env flag is set after Zalo verifies the OA.
+
+            create table if not exists shop_zalo_links (
+                id uuid primary key default gen_random_uuid(),
+                shop_id uuid not null references shops(id) on delete cascade,
+                zalo_id text not null,                                  -- Zalo OA user_id (sender)
+                pairing_code text,                                      -- 6-digit code while pending
+                pairing_expires_at timestamptz,
+                linked_at timestamptz,
+                last_command_at timestamptz,
+                created_at timestamptz not null default timezone('utc', now())
+            );
+            create unique index if not exists ux_shop_zalo_links_zalo
+                on shop_zalo_links(zalo_id) where linked_at is not null;
+            create index if not exists idx_shop_zalo_links_shop on shop_zalo_links(shop_id);
+            create unique index if not exists ux_shop_zalo_links_pairing
+                on shop_zalo_links(pairing_code) where pairing_code is not null;
+
+            -- Audit log: every inbound OA event + every outbound command result.
+            create table if not exists zalo_oa_events (
+                id uuid primary key default gen_random_uuid(),
+                direction text not null check (direction in ('in','out')),
+                zalo_id text,
+                shop_id uuid references shops(id) on delete set null,
+                event_type text not null,                               -- 'text','command','reply','error'
+                command text,                                           -- nghi|day|giam|mo|dong|lich|null
+                payload jsonb,
+                outcome text,
+                created_at timestamptz not null default timezone('utc', now())
+            );
+            create index if not exists idx_zalo_oa_events_shop
+                on zalo_oa_events(shop_id, created_at desc);
+            create index if not exists idx_zalo_oa_events_zalo
+                on zalo_oa_events(zalo_id, created_at desc);
+            """,
+            cancellationToken);
     }
     private static async Task ApplyMigrationAsync(NpgsqlConnection connection, string version, string script, CancellationToken cancellationToken)
     {

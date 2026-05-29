@@ -77,6 +77,9 @@ try
     builder.Services.AddSingleton<RoutingNotificationProvider>();
     builder.Services.AddScoped<NotificationDispatcher>();
 
+    // W11 Zalo OA bridge — executor is scoped because it touches per-request DB state.
+    builder.Services.AddScoped<Booking360.Api.Features.Zalo.ZaloCommandExecutor>();
+
     // Wave 4: per-minute scheduler (reminder T-30, no-show T+15, review-link T+45, 00:00 VN daily reset)
     builder.Services.AddScoped<SchedulerJobs>();
     builder.Services.AddHostedService<BookingScheduler>();
