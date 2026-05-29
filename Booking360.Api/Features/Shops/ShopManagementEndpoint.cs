@@ -23,6 +23,9 @@ public sealed class ShopManagementEndpoint : IEndpoint
     public sealed record ShopCapacityRequest(int MaxOnlinePerSlot);
     public sealed record ShopEarlyCloseRequest(string? EarlyCloseToday);
 
+    // W8: shop profile patch — price segment, photo gallery, district.
+    public sealed record ShopProfileRequest(string? PriceSegment, string[]? PhotoUrls, string? District);
+
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
         var group = routeBuilder.MapGroup("/api/shop/m/{token:guid}")
@@ -227,6 +230,70 @@ public sealed class ShopManagementEndpoint : IEndpoint
         })
         .WithName("ShopCancelBooking");
 
+        // PATCH shop profile (W8 REQ-SS-010 / EC-018) — price segment, photo gallery, district.
+        group.MapPatch("/profile", async (
+            Guid token,
+            ShopProfileRequest request,
+            Booking360Database database,
+            CancellationToken cancellationToken) =>
+        {
+            var shop = await database.GetShopByTokenAsync(token, cancellationToken);
+            if (shop is null)
+            {
+                return Results.NotFound(new { error = "Liên kết quản lý không hợp lệ" });
+            }
+
+            // Validation: cap photo gallery and price segment vocabulary.
+            string? priceSegment = null;
+            if (!string.IsNullOrWhiteSpace(request.PriceSegment))
+            {
+                var seg = request.PriceSegment.Trim();
+                string[] allowed = { "50-80k", "80-120k", "120-150k", "150k+" };
+                if (Array.IndexOf(allowed, seg) < 0)
+                {
+                    return Results.BadRequest(new { error = "Phân khúc giá không hợp lệ" });
+                }
+                priceSegment = seg;
+            }
+
+            string[]? photos = null;
+            if (request.PhotoUrls is not null)
+            {
+                if (request.PhotoUrls.Length > 8)
+                {
+                    return Results.BadRequest(new { error = "Tối đa 8 ảnh" });
+                }
+                foreach (var p in request.PhotoUrls)
+                {
+                    if (string.IsNullOrWhiteSpace(p)) continue;
+                    if (!Uri.TryCreate(p, UriKind.Absolute, out var uri) ||
+                        (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+                    {
+                        return Results.BadRequest(new { error = "Liên kết ảnh không hợp lệ" });
+                    }
+                }
+                photos = request.PhotoUrls.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p.Trim()).ToArray();
+            }
+
+            string? district = null;
+            if (!string.IsNullOrWhiteSpace(request.District))
+            {
+                var d = request.District.Trim();
+                if (d.Length > 80)
+                {
+                    return Results.BadRequest(new { error = "Tên quận quá dài" });
+                }
+                district = d;
+            }
+
+            var refreshed = await database.UpdateShopProfileAsync(shop.Id, priceSegment, photos, district, cancellationToken);
+            if (refreshed is null)
+            {
+                return Results.Problem("Không thể cập nhật hồ sơ quán", statusCode: 500);
+            }
+            return Results.Ok(MapShopForOwner(refreshed));
+        })
+        .WithName("ShopUpdateProfile");
         // POST shop reply to a review (W5)
         group.MapPost("/reviews/{reviewId:guid}/reply", async (
             Guid token,
@@ -329,6 +396,11 @@ public sealed class ShopManagementEndpoint : IEndpoint
         pausedUntil = shop.PausedUntil,
         earlyCloseToday = shop.EarlyCloseToday?.ToString("HH:mm"),
         cancelCount30d = shop.CancelCount30d,
+        // W8: media + GTM fields
+        photoUrl = shop.PhotoUrl,
+        photoUrls = shop.PhotoUrls,
+        priceSegment = shop.PriceSegment,
+        district = shop.District,
         publicUrl = $"/shops/{shop.Slug}"
     };
 

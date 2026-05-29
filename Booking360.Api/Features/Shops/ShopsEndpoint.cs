@@ -14,7 +14,8 @@ public sealed class ShopsEndpoint : IEndpoint
         double? Lng,
         string? OpenTime,
         string? CloseTime,
-        int[]? WorkingDays);
+        int[]? WorkingDays,
+        string? District);
 
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
@@ -71,7 +72,8 @@ public sealed class ShopsEndpoint : IEndpoint
                 Lng: request.Lng,
                 OpenTime: ParseTime(request.OpenTime, new TimeOnly(9, 0)),
                 CloseTime: ParseTime(request.CloseTime, new TimeOnly(20, 0)),
-                WorkingDays: request.WorkingDays);
+                WorkingDays: request.WorkingDays,
+                District: string.IsNullOrWhiteSpace(request.District) ? null : request.District!.Trim());
 
             var record = await database.CreateShopAsync(input, cancellationToken);
 
@@ -151,7 +153,10 @@ public sealed class ShopsEndpoint : IEndpoint
         lat = item.Lat,
         lng = item.Lng,
         photoUrl = item.PhotoUrl,
+        // W8 REQ-EC-018 / GM-001: surface gallery + GTM district to FE.
+        photoUrls = item.PhotoUrls,
         priceSegment = item.PriceSegment,
+        district = item.District,
         happyScore = item.HappyScore,
         reviewCount = item.ReviewCount,
         status = item.Status,
@@ -169,7 +174,10 @@ public sealed class ShopsEndpoint : IEndpoint
         lat = shop.Lat,
         lng = shop.Lng,
         photoUrl = shop.PhotoUrl,
+        // W8 REQ-EC-018 / GM-001: gallery + GTM district on the detail payload.
+        photoUrls = shop.PhotoUrls,
         priceSegment = shop.PriceSegment,
+        district = shop.District,
         happyScore = shop.HappyScore,
         reviewCount = shop.ReviewCount,
         openTime = shop.OpenTime.ToString("HH:mm"),

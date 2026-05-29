@@ -322,6 +322,19 @@ public sealed partial class Booking360Database
                 where no_show_marked_at is not null;
             """,
             cancellationToken);
+
+        await ApplyMigrationAsync(
+            connection,
+            "006_w8_shop_media",
+            """
+            -- W8: shop media (multi-photo) + district key for GTM density.
+            -- Additive only; preserves existing photo_url/price_segment columns.
+            alter table shops add column if not exists photo_urls jsonb not null default '[]'::jsonb;
+            alter table shops add column if not exists district text;
+
+            create index if not exists idx_shops_district on shops(district) where district is not null;
+            """,
+            cancellationToken);
     }
     private static async Task ApplyMigrationAsync(NpgsqlConnection connection, string version, string script, CancellationToken cancellationToken)
     {
