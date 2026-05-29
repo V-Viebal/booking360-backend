@@ -226,6 +226,177 @@ public sealed partial class Booking360Database
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
+    // ----- Wave 4: scheduler queries (atomic mark-on-update for idempotency) -----
+
+    public async Task<IReadOnlyList<BookingV2Record>> ListBookingsDueForReminderAsync(DateTimeOffset now, CancellationToken cancellationToken = default)
+    {
+        // T-30: slot_time within (now+25m, now+35m) so jobs catch the booking even if a tick is slightly late or off-grid.
+        const string sql = """
+            select id, shop_id, booking_token, customer_name, customer_phone, slot_time, note, status, cancelled_by, cancel_reason, cancelled_at, created_at
+              from bookings_v2
+             where status in ('pending','confirmed')
+               and reminder_sent_at is null
+               and cancelled_at is null
+               and slot_time between (@now + interval '25 minutes') and (@now + interval '35 minutes')
+             order by slot_time asc
+             limit 100;
+            """;
+        return await QueryBookingsAsync(sql, ("now", now.UtcDateTime), cancellationToken);
+    }
+
+    public async Task<bool> TryMarkReminderSentAsync(Guid bookingId, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            update bookings_v2
+               set reminder_sent_at = timezone('utc', now()),
+                   updated_at = timezone('utc', now())
+             where id = @id
+               and reminder_sent_at is null
+             returning id;
+            """;
+        return await ExecuteScalarBoolAsync(sql, ("id", bookingId), cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<BookingV2Record>> ListBookingsForNoShowAsync(DateTimeOffset now, CancellationToken cancellationToken = default)
+    {
+        // T+15: slot_time <= now-15m, with a 4h backfill window (handles process restarts).
+        const string sql = """
+            select id, shop_id, booking_token, customer_name, customer_phone, slot_time, note, status, cancelled_by, cancel_reason, cancelled_at, created_at
+              from bookings_v2
+             where status in ('pending','confirmed')
+               and no_show_marked_at is null
+               and cancelled_at is null
+               and slot_time <= (@now - interval '15 minutes')
+               and slot_time >= (@now - interval '4 hours')
+             order by slot_time asc
+             limit 100;
+            """;
+        return await QueryBookingsAsync(sql, ("now", now.UtcDateTime), cancellationToken);
+    }
+
+    public async Task<bool> TryMarkNoShowAsync(Guid bookingId, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            update bookings_v2
+               set no_show_marked_at = timezone('utc', now()),
+                   status = 'no_show',
+                   updated_at = timezone('utc', now())
+             where id = @id
+               and no_show_marked_at is null
+               and cancelled_at is null
+             returning id;
+            """;
+        return await ExecuteScalarBoolAsync(sql, ("id", bookingId), cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<BookingV2Record>> ListBookingsForReviewLinkAsync(DateTimeOffset now, CancellationToken cancellationToken = default)
+    {
+        // T+45: slot_time <= now-45m, customer presumably showed up (no_show not set), 12h backfill window.
+        const string sql = """
+            select id, shop_id, booking_token, customer_name, customer_phone, slot_time, note, status, cancelled_by, cancel_reason, cancelled_at, created_at
+              from bookings_v2
+             where status in ('confirmed','completed')
+               and review_link_sent_at is null
+               and no_show_marked_at is null
+               and cancelled_at is null
+               and slot_time <= (@now - interval '45 minutes')
+               and slot_time >= (@now - interval '12 hours')
+             order by slot_time asc
+             limit 100;
+            """;
+        return await QueryBookingsAsync(sql, ("now", now.UtcDateTime), cancellationToken);
+    }
+
+    public async Task<bool> TryMarkReviewLinkSentAsync(Guid bookingId, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            update bookings_v2
+               set review_link_sent_at = timezone('utc', now()),
+                   updated_at = timezone('utc', now())
+             where id = @id
+               and review_link_sent_at is null
+             returning id;
+            """;
+        return await ExecuteScalarBoolAsync(sql, ("id", bookingId), cancellationToken);
+    }
+
+    public async Task<int> ResetDailyShopStatusAsync(CancellationToken cancellationToken = default)
+    {
+        // Daily 00:00 VN reset: paused_today -> active, clear early_close_today, clear paused_until if past.
+        const string sql = """
+            with reset_status as (
+                update shops
+                   set status = 'active',
+                       updated_at = timezone('utc', now())
+                 where status = 'paused_today'
+                returning 1
+            ),
+            reset_early as (
+                update shops
+                   set early_close_today = null,
+                       updated_at = timezone('utc', now())
+                 where early_close_today is not null
+                returning 1
+            ),
+            reset_paused as (
+                update shops
+                   set paused_until = null,
+                       status = case when status = 'paused' then 'active' else status end,
+                       updated_at = timezone('utc', now())
+                 where paused_until is not null and paused_until <= timezone('utc', now())
+                returning 1
+            )
+            select (select count(*) from reset_status) + (select count(*) from reset_early) + (select count(*) from reset_paused);
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        var n = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(n ?? 0);
+    }
+
+    public async Task<bool> TryClaimDailyJobAsync(string jobName, DateOnly vnDate, CancellationToken cancellationToken = default)
+    {
+        // Atomic claim: insert if missing, update only when last_run_vn_date differs.
+        const string sql = """
+            insert into scheduler_state (job_name, last_run_at, last_run_vn_date, notes)
+            values (@job, timezone('utc', now()), @vn_date, 'claimed')
+            on conflict (job_name) do update
+                set last_run_at = excluded.last_run_at,
+                    last_run_vn_date = excluded.last_run_vn_date,
+                    notes = excluded.notes
+              where scheduler_state.last_run_vn_date is distinct from excluded.last_run_vn_date
+            returning 1;
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("job", jobName);
+        command.Parameters.Add(new NpgsqlParameter("vn_date", NpgsqlDbType.Date) { Value = vnDate.ToDateTime(TimeOnly.MinValue) });
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<BookingV2Record>> QueryBookingsAsync(string sql, (string Name, object Value) param, CancellationToken cancellationToken)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue(param.Name, param.Value);
+        var results = new List<BookingV2Record>();
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            results.Add(MapBookingV2(reader));
+        }
+        return results;
+    }
+
+    private async Task<bool> ExecuteScalarBoolAsync(string sql, (string Name, object Value) param, CancellationToken cancellationToken)
+    {
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue(param.Name, param.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken);
+    }
     private static BookingV2Record MapBookingV2(NpgsqlDataReader reader)
     {
         return new BookingV2Record(

@@ -162,4 +162,72 @@ public static class NotificationTemplates
             null,
             null);
     }
-}
+
+    public static NotificationPayload BookingReminderForCustomer(
+        BookingNotificationData data,
+        string channel,
+        Guid bookingId,
+        Guid shopId,
+        Guid bookingToken,
+        string frontendUrl)
+    {
+        var bookingUrl = $"{frontendUrl.TrimEnd('/')}/b/{bookingToken}";
+        var subject = $"Booking360: Nhac lich tai {data.ShopName} luc {FormatVn(data.SlotTime)}";
+        var message = channel == "email"
+            ? $"<p>Nhac ban: lich cat tai <strong>{System.Net.WebUtility.HtmlEncode(data.ShopName)}</strong> sap toi (luc <strong>{FormatVn(data.SlotTime)}</strong>).</p>" +
+              $"<p>Xem hoac huy lich: <a href=\"{bookingUrl}\">{bookingUrl}</a></p>"
+            : $"Booking360: Nhac lich tai {data.ShopName} luc {FormatVn(data.SlotTime)}. Xem/huy: {bookingUrl}";
+        return new NotificationPayload(
+            NotificationKind.SlotReminder,
+            channel,
+            data.CustomerPhone,
+            subject,
+            message,
+            bookingId,
+            shopId);
+    }
+
+    public static NotificationPayload NoShowForShop(
+        BookingNotificationData data,
+        string channel,
+        Guid bookingId,
+        Guid shopId)
+    {
+        var subject = $"Booking360: Khach {data.CustomerName} khong den (no-show)";
+        var message = channel == "email"
+            ? $"<p>Khach <strong>{System.Net.WebUtility.HtmlEncode(data.CustomerName)}</strong> ({data.CustomerPhone}) da khong den lich luc " +
+              $"<strong>{FormatVn(data.SlotTime)}</strong>. Lich da duoc danh dau no-show.</p>"
+            : $"Booking360: Khach {data.CustomerName} ({data.CustomerPhone}) khong den lich luc {FormatVn(data.SlotTime)}. Da danh dau no-show.";
+        return new NotificationPayload(
+            NotificationKind.NoShow,
+            channel,
+            data.ShopPhone,
+            subject,
+            message,
+            bookingId,
+            shopId);
+    }
+
+    public static NotificationPayload ReviewLinkForCustomer(
+        BookingNotificationData data,
+        string channel,
+        Guid bookingId,
+        Guid shopId,
+        Guid bookingToken,
+        string frontendUrl)
+    {
+        var reviewUrl = $"{frontendUrl.TrimEnd('/')}/b/{bookingToken}/review";
+        var subject = $"Booking360: Danh gia trai nghiem tai {data.ShopName}";
+        var message = channel == "email"
+            ? $"<p>Cam on ban da ghe <strong>{System.Net.WebUtility.HtmlEncode(data.ShopName)}</strong>!</p>" +
+              $"<p>Hay danh gia trai nghiem cua ban (1 phut): <a href=\"{reviewUrl}\">{reviewUrl}</a></p>"
+            : $"Booking360: Cam on ban da ghe {data.ShopName}. Danh gia: {reviewUrl}";
+        return new NotificationPayload(
+            NotificationKind.ReviewLink,
+            channel,
+            data.CustomerPhone,
+            subject,
+            message,
+            bookingId,
+            shopId);
+    }}

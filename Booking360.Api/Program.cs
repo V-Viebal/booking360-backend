@@ -77,6 +77,10 @@ try
     builder.Services.AddSingleton<RoutingNotificationProvider>();
     builder.Services.AddScoped<NotificationDispatcher>();
 
+    // Wave 4: per-minute scheduler (reminder T-30, no-show T+15, review-link T+45, 00:00 VN daily reset)
+    builder.Services.AddScoped<SchedulerJobs>();
+    builder.Services.AddHostedService<BookingScheduler>();
+
     // Auth (Logto JWT bearer)
     builder.Services.AddHttpClient("logto-userinfo")
         .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(8));

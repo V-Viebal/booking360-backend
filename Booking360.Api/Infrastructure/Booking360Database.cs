@@ -265,6 +265,19 @@ public sealed partial class Booking360Database
             );
             """,
             cancellationToken);
+
+        await ApplyMigrationAsync(
+            connection,
+            "004_w4_scheduler_state",
+            """
+            create table if not exists scheduler_state (
+                job_name text primary key,
+                last_run_at timestamptz not null,
+                last_run_vn_date date,
+                notes text
+            );
+            """,
+            cancellationToken);
     }
     private static async Task ApplyMigrationAsync(NpgsqlConnection connection, string version, string script, CancellationToken cancellationToken)
     {

@@ -11,7 +11,8 @@ public enum NotificationKind
     ShopRegistration,
     ShopPaused,
     ShopResumed,
-    NoShow
+    NoShow,
+    ReviewLink
 }
 
 public sealed record NotificationContext(
