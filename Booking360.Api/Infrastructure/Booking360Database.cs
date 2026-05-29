@@ -64,7 +64,7 @@ public sealed record AdminOverview(
     IReadOnlyList<Booking360UserRecord> LatestUsers,
     IReadOnlyList<BookingRecord> LatestBookings);
 
-public sealed class Booking360Database
+public sealed partial class Booking360Database
 {
     private readonly NpgsqlDataSource _dataSource;
 
@@ -164,6 +164,105 @@ public sealed class Booking360Database
               (gen_random_uuid(), 'meeting-room-orion', 'Meeting Room Orion', '10-seat meeting room with 4K display and whiteboard.', 'District 1 - HCMC', 10, 18.00, true),
               (gen_random_uuid(), 'workshop-nebula', 'Workshop Nebula', 'Hands-on workshop floor with movable benches.', 'Thu Duc City', 24, 22.50, true)
             on conflict (slug) do nothing;
+            """,
+            cancellationToken);
+
+        await ApplyMigrationAsync(
+            connection,
+            "003_book360_core",
+            """
+            create table if not exists shops (
+                id uuid primary key default gen_random_uuid(),
+                slug text not null unique,
+                name text not null,
+                phone text not null,
+                address text not null default '',
+                lat double precision,
+                lng double precision,
+                open_time time not null default '09:00',
+                close_time time not null default '20:00',
+                working_days int[] not null default array[1,2,3,4,5,6,0],
+                slot_duration_minutes int not null default 30,
+                max_online_per_slot int not null default 2,
+                status text not null default 'active',
+                shop_access_token uuid not null default gen_random_uuid() unique,
+                zalo_user_id text,
+                photo_url text,
+                price_segment text,
+                happy_score numeric(3,2) not null default 0,
+                review_count int not null default 0,
+                paused_until timestamptz,
+                early_close_today time,
+                cancel_count_30d int not null default 0,
+                created_at timestamptz not null default timezone('utc', now()),
+                updated_at timestamptz not null default timezone('utc', now())
+            );
+
+            create index if not exists idx_shops_status on shops(status);
+            create index if not exists idx_shops_geo on shops(lat, lng);
+
+            create table if not exists bookings_v2 (
+                id uuid primary key default gen_random_uuid(),
+                shop_id uuid not null references shops(id) on delete cascade,
+                booking_token uuid not null default gen_random_uuid() unique,
+                customer_name text not null,
+                customer_phone text not null,
+                slot_time timestamptz not null,
+                note text,
+                status text not null default 'confirmed',
+                cancelled_by text,
+                cancel_reason text,
+                cancelled_at timestamptz,
+                reminder_sent_at timestamptz,
+                confirmed_via_reminder bool not null default false,
+                no_show_marked_at timestamptz,
+                review_link_sent_at timestamptz,
+                created_at timestamptz not null default timezone('utc', now()),
+                updated_at timestamptz not null default timezone('utc', now())
+            );
+
+            create index if not exists idx_bookings_v2_shop_slot on bookings_v2(shop_id, slot_time);
+            create index if not exists idx_bookings_v2_phone on bookings_v2(customer_phone, created_at desc);
+            create index if not exists idx_bookings_v2_status on bookings_v2(status, slot_time);
+
+            create table if not exists reviews (
+                id uuid primary key default gen_random_uuid(),
+                booking_id uuid not null unique references bookings_v2(id) on delete cascade,
+                shop_id uuid not null references shops(id) on delete cascade,
+                rating int not null check (rating between 1 and 5),
+                comment text,
+                shop_reply text,
+                shop_replied_at timestamptz,
+                reported_count int not null default 0,
+                weight numeric(3,2) not null default 1.0,
+                created_at timestamptz not null default timezone('utc', now())
+            );
+
+            create index if not exists idx_reviews_shop on reviews(shop_id, created_at desc);
+
+            create table if not exists notification_log (
+                id uuid primary key default gen_random_uuid(),
+                booking_id uuid references bookings_v2(id) on delete cascade,
+                shop_id uuid references shops(id) on delete cascade,
+                type text not null,
+                channel text not null,
+                target text not null,
+                status text not null default 'pending',
+                failure_reason text,
+                provider_message_id text,
+                sent_at timestamptz,
+                delivered_at timestamptz,
+                created_at timestamptz not null default timezone('utc', now())
+            );
+
+            create index if not exists idx_notif_log_booking on notification_log(booking_id, created_at desc);
+            create index if not exists idx_notif_log_status on notification_log(status, created_at desc);
+
+            create table if not exists phone_blacklist (
+                phone text primary key,
+                reason text,
+                created_at timestamptz not null default timezone('utc', now())
+            );
             """,
             cancellationToken);
     }

@@ -70,6 +70,10 @@ try
     // Mail
     builder.Services.AddSingleton<IBooking360MailService, Booking360MailService>();
 
+    // Notifications (Wave 1: mock provider; Wave 2 will swap in Zalo ZNS)
+    builder.Services.AddSingleton<INotificationProvider, MockNotificationProvider>();
+    builder.Services.AddScoped<NotificationDispatcher>();
+
     // Auth (Logto JWT bearer)
     builder.Services.AddHttpClient("logto-userinfo")
         .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(8));
