@@ -218,7 +218,7 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in $(seq 1 60); do
-            if curl -kfsSL --resolve "${API_DOMAIN}:443:127.0.0.1" "https://${API_DOMAIN}/api/health"; then
+            if curl -kfsSL --resolve "${API_DOMAIN}:443:127.0.0.1" "https://${API_DOMAIN}/health"; then
               break
             fi
 
@@ -245,6 +245,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          response="$(curl -fsSL "https://${API_DOMAIN}/api/health")"
+          response="$(curl -fsSL "https://${API_DOMAIN}/health")"
           echo "$response"
           echo "$response" | grep -qiE 'ok|healthy'
