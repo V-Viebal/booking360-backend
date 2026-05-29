@@ -17,6 +17,8 @@ public sealed class ShopManagementEndpoint : IEndpoint
 
     public sealed record CancelByShopRequest(string? Reason);
 
+    public sealed record ShopReviewReplyRequest(string Reply);
+
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
         var group = routeBuilder.MapGroup("/api/shop/m/{token:guid}")
@@ -136,8 +138,85 @@ public sealed class ShopManagementEndpoint : IEndpoint
             return Results.Ok(MapBooking(record));
         })
         .WithName("ShopCancelBooking");
-    }
 
+        // POST shop reply to a review (W5)
+        group.MapPost("/reviews/{reviewId:guid}/reply", async (
+            Guid token,
+            Guid reviewId,
+            ShopReviewReplyRequest request,
+            Booking360Database database,
+            CancellationToken cancellationToken) =>
+        {
+            var shop = await database.GetShopByTokenAsync(token, cancellationToken);
+            if (shop is null)
+            {
+                return Results.NotFound(new { error = "Liên kết quản lý không hợp lệ" });
+            }
+            if (string.IsNullOrWhiteSpace(request.Reply) || request.Reply.Trim().Length < 2)
+            {
+                return Results.BadRequest(new { error = "Nội dung phản hồi không hợp lệ" });
+            }
+            if (request.Reply.Length > 2000)
+            {
+                return Results.BadRequest(new { error = "Phản hồi không được dài quá 2000 ký tự" });
+            }
+            var existing = await database.GetReviewByIdAsync(reviewId, cancellationToken);
+            if (existing is null || existing.ShopId != shop.Id)
+            {
+                return Results.NotFound(new { error = "Không tìm thấy đánh giá" });
+            }
+            var updated = await database.SetShopReplyAsync(reviewId, shop.Id, request.Reply, cancellationToken);
+            if (updated is null)
+            {
+                return Results.Problem("Không thể lưu phản hồi", statusCode: 500);
+            }
+            return Results.Ok(new
+            {
+                id = updated.Id,
+                rating = updated.Rating,
+                comment = updated.Comment,
+                shopReply = updated.ShopReply,
+                shopRepliedAt = updated.ShopRepliedAt,
+                createdAt = updated.CreatedAt
+            });
+        })
+        .WithName("ShopReplyToReview");
+
+        // GET shop dashboard reviews list (W5)
+        group.MapGet("/reviews", async (
+            Guid token,
+            [FromQuery] int? limit,
+            Booking360Database database,
+            CancellationToken cancellationToken) =>
+        {
+            var shop = await database.GetShopByTokenAsync(token, cancellationToken);
+            if (shop is null)
+            {
+                return Results.NotFound(new { error = "Liên kết quản lý không hợp lệ" });
+            }
+            var capped = Math.Clamp(limit ?? 50, 1, 200);
+            // Shop dashboard sees suppressed reviews so the owner can spot moderation issues.
+            var reviews = await database.ListReviewsForShopAsync(shop.Id, capped, includeSuppressed: true, cancellationToken);
+            return Results.Ok(new
+            {
+                shop = new { id = shop.Id, slug = shop.Slug, happyScore = shop.HappyScore, reviewCount = shop.ReviewCount },
+                reviews = reviews.Select(r => new
+                {
+                    id = r.Id,
+                    rating = r.Rating,
+                    comment = r.Comment,
+                    shopReply = r.ShopReply,
+                    shopRepliedAt = r.ShopRepliedAt,
+                    reportedCount = r.ReportedCount,
+                    weight = r.Weight,
+                    suppressed = r.Weight == 0m,
+                    createdAt = r.CreatedAt,
+                    customerDisplay = r.CustomerDisplay
+                })
+            });
+        })
+        .WithName("ShopListReviews");
+    }
     private static TimeOnly? ParseTimeOptional(string? value)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
