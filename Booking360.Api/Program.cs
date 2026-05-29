@@ -70,8 +70,11 @@ try
     // Mail
     builder.Services.AddSingleton<IBooking360MailService, Booking360MailService>();
 
-    // Notifications (Wave 1: mock provider; Wave 2 will swap in Zalo ZNS)
-    builder.Services.AddSingleton<INotificationProvider, MockNotificationProvider>();
+    // Notifications (Wave 3: Log + Email + ZNS-stub providers, routed by Channel + env default)
+    builder.Services.AddSingleton<INotificationProvider, LogNotificationProvider>();
+    builder.Services.AddSingleton<INotificationProvider, EmailNotificationProvider>();
+    builder.Services.AddSingleton<INotificationProvider, ZaloSmsNotificationProvider>();
+    builder.Services.AddSingleton<RoutingNotificationProvider>();
     builder.Services.AddScoped<NotificationDispatcher>();
 
     // Auth (Logto JWT bearer)

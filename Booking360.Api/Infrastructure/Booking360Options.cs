@@ -22,6 +22,7 @@ public sealed class Booking360Options
         string mailPassword,
         string mailSenderEmail,
         string mailSenderName,
+        string defaultNotificationChannel,
         bool isDevelopment)
     {
         AuthIssuer = authIssuer;
@@ -41,6 +42,7 @@ public sealed class Booking360Options
         MailPassword = mailPassword;
         MailSenderEmail = mailSenderEmail;
         MailSenderName = mailSenderName;
+        DefaultNotificationChannel = defaultNotificationChannel;
         IsDevelopment = isDevelopment;
     }
 
@@ -61,6 +63,7 @@ public sealed class Booking360Options
     public string MailPassword { get; }
     public string MailSenderEmail { get; }
     public string MailSenderName { get; }
+    public string DefaultNotificationChannel { get; }
     public bool IsDevelopment { get; }
 
     public string ActiveBucket => IsDevelopment ? LocalBucket : ProductionBucket;
@@ -108,6 +111,7 @@ public sealed class Booking360Options
             ?? string.Empty;
         var mailSenderName = configuration["BOOKING360_MAIL_SENDER_NAME"]?.Trim()
             ?? "Booking360";
+        var defaultChannel = (configuration["BOOKING360_NOTIFICATION_DEFAULT_CHANNEL"]?.Trim() ?? "log").ToLowerInvariant();
 
         return new Booking360Options(
             authIssuer: authIssuer,
@@ -127,6 +131,7 @@ public sealed class Booking360Options
             mailPassword: mailPassword,
             mailSenderEmail: mailSenderEmail,
             mailSenderName: mailSenderName,
+            defaultNotificationChannel: defaultChannel,
             isDevelopment: environment.IsDevelopment());
     }
 

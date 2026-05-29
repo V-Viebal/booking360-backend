@@ -50,6 +50,8 @@ public sealed class ShopsEndpoint : IEndpoint
         publicGroup.MapPost("/register", async (
             ShopRegisterRequest request,
             Booking360Database database,
+            NotificationDispatcher dispatcher,
+            Booking360Options options,
             CancellationToken cancellationToken) =>
         {
             var error = ValidateRegistration(request);
@@ -69,6 +71,16 @@ public sealed class ShopsEndpoint : IEndpoint
                 WorkingDays: request.WorkingDays);
 
             var record = await database.CreateShopAsync(input, cancellationToken);
+
+            // W3: notify shop owner of successful registration
+            _ = dispatcher.DispatchAsync(NotificationTemplates.ShopRegistrationForOwner(
+                new ShopRegistrationData(
+                    ShopName: record.Name,
+                    ShopPhone: record.Phone,
+                    ShopAccessToken: record.ShopAccessToken,
+                    Slug: record.Slug,
+                    FrontendUrl: options.FrontendUrl),
+                options.DefaultNotificationChannel), CancellationToken.None);
 
             return Results.Created($"/api/public/shops/{Uri.EscapeDataString(record.Slug)}", new
             {

@@ -9,6 +9,7 @@ public interface IBooking360MailService
     bool IsEnabled { get; }
     Task<bool> SendWelcomeAsync(string toAddress, string displayName, CancellationToken cancellationToken = default);
     Task<bool> SendBookingConfirmationAsync(string toAddress, string displayName, BookingRecord booking, CancellationToken cancellationToken = default);
+    Task<bool> SendRawAsync(string toAddress, string subject, string htmlBody, CancellationToken cancellationToken = default);
 }
 
 public sealed class Booking360MailService : IBooking360MailService
@@ -68,6 +69,16 @@ public sealed class Booking360MailService : IBooking360MailService
             """;
         var bodyText = $"Hi {displayName},\n\nBooking confirmed: {booking.Title} -> {booking.ResourceName}\nStart: {startLocal}\nEnd: {endLocal}\nManage: {_options.FrontendUrl}/bookings";
         return await SendAsync(toAddress, subject, bodyHtml, bodyText, cancellationToken);
+    }
+
+    public Task<bool> SendRawAsync(string toAddress, string subject, string htmlBody, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(toAddress))
+        {
+            return Task.FromResult(false);
+        }
+        var text = System.Text.RegularExpressions.Regex.Replace(htmlBody ?? string.Empty, "<[^>]+>", " ");
+        return SendAsync(toAddress, subject, htmlBody ?? string.Empty, text, cancellationToken);
     }
 
     private async Task<bool> SendAsync(string to, string subject, string html, string text, CancellationToken cancellationToken)

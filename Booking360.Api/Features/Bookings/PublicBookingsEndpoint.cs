@@ -26,6 +26,7 @@ public sealed class PublicBookingsEndpoint : IEndpoint
             PublicBookingRequest request,
             Booking360Database database,
             NotificationDispatcher dispatcher,
+            Booking360Options options,
             CancellationToken cancellationToken) =>
         {
             var error = ValidateBooking(request);
@@ -66,14 +67,22 @@ public sealed class PublicBookingsEndpoint : IEndpoint
 
             var booking = await database.CreateBookingV2Async(input, cancellationToken);
 
-            // Dispatch confirmation notification (mock provider in Wave 1).
-            _ = dispatcher.DispatchAsync(new NotificationContext(
-                Kind: NotificationKind.BookingConfirmation,
-                Channel: "log",
-                Target: booking.CustomerPhone,
-                Message: $"Booking360: Đặt lịch tại {shop.Name} lúc {booking.SlotTime.ToOffset(TimeSpan.FromHours(7)):HH:mm dd/MM/yyyy}. Mã: {booking.BookingToken}",
-                BookingId: booking.Id,
-                ShopId: shop.Id), CancellationToken.None);
+            // Dispatch confirmation notifications (W3: customer + shop, routed via env default channel).
+            var notifyData = new BookingNotificationData(
+                ShopName: shop.Name,
+                ShopAddress: shop.Address,
+                ShopPhone: shop.Phone,
+                CustomerName: booking.CustomerName,
+                CustomerPhone: booking.CustomerPhone,
+                SlotTime: booking.SlotTime,
+                BookingToken: booking.BookingToken,
+                Note: booking.Note,
+                CancelReason: null);
+            var defaultChannel = options.DefaultNotificationChannel;
+            _ = dispatcher.DispatchAsync(NotificationTemplates.BookingConfirmationForCustomer(
+                notifyData, defaultChannel, booking.Id, shop.Id, options.FrontendUrl), CancellationToken.None);
+            _ = dispatcher.DispatchAsync(NotificationTemplates.NewBookingForShop(
+                notifyData, defaultChannel, booking.Id, shop.Id, shop.ShopAccessToken, options.FrontendUrl), CancellationToken.None);
 
             return Results.Created($"/api/public/bookings/{booking.BookingToken}", new
             {
@@ -108,6 +117,7 @@ public sealed class PublicBookingsEndpoint : IEndpoint
             CancelByTokenRequest? request,
             Booking360Database database,
             NotificationDispatcher dispatcher,
+            Booking360Options options,
             CancellationToken cancellationToken) =>
         {
             var record = await database.CancelBookingByTokenAsync(token, "customer", request?.Reason, cancellationToken);
@@ -117,13 +127,25 @@ public sealed class PublicBookingsEndpoint : IEndpoint
             }
             var shop = await database.GetShopByIdAsync(record.ShopId, cancellationToken);
 
-            _ = dispatcher.DispatchAsync(new NotificationContext(
-                Kind: NotificationKind.BookingCancelledByCustomer,
-                Channel: "log",
-                Target: record.CustomerPhone,
-                Message: $"Booking360: Bạn đã huỷ lịch tại {shop?.Name ?? "quán"} lúc {record.SlotTime.ToOffset(TimeSpan.FromHours(7)):HH:mm dd/MM/yyyy}",
-                BookingId: record.Id,
-                ShopId: record.ShopId), CancellationToken.None);
+            // W3: dispatch cancel notification to BOTH customer and shop.
+            if (shop is not null)
+            {
+                var cancelData = new BookingNotificationData(
+                    ShopName: shop.Name,
+                    ShopAddress: shop.Address,
+                    ShopPhone: shop.Phone,
+                    CustomerName: record.CustomerName,
+                    CustomerPhone: record.CustomerPhone,
+                    SlotTime: record.SlotTime,
+                    BookingToken: record.BookingToken,
+                    Note: record.Note,
+                    CancelReason: record.CancelReason);
+                var defaultChannel = options.DefaultNotificationChannel;
+                _ = dispatcher.DispatchAsync(NotificationTemplates.BookingCancelledForCustomer(
+                    cancelData, defaultChannel, record.Id, record.ShopId), CancellationToken.None);
+                _ = dispatcher.DispatchAsync(NotificationTemplates.BookingCancelledForShop(
+                    cancelData, defaultChannel, record.Id, record.ShopId, record.CancelledBy ?? "customer"), CancellationToken.None);
+            }
 
             return Results.Ok(MapBookingPublic(record, shop));
         })
