@@ -70,7 +70,7 @@ public sealed class ShopsEndpoint : IEndpoint
 
             var record = await database.CreateShopAsync(input, cancellationToken);
 
-            return Results.Created($"/api/public/shops/{record.Slug}", new
+            return Results.Created($"/api/public/shops/{Uri.EscapeDataString(record.Slug)}", new
             {
                 slug = record.Slug,
                 shopAccessToken = record.ShopAccessToken,

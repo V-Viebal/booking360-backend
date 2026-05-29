@@ -21,9 +21,16 @@ internal static class SlugHelper
                 continue;
             }
             // Vietnamese 'd' with stroke -> 'd'.
-            if (ch == 'đ') { sb.Append('d'); continue; }
-            if (ch == 'Đ') { sb.Append('d'); continue; }
-            sb.Append(char.IsLetterOrDigit(ch) ? ch : '-');
+            if (ch == 'đ' || ch == 'Đ') { sb.Append('d'); continue; }
+            // Force ASCII-only output: letter, digit, or hyphen for everything else.
+            if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))
+            {
+                sb.Append(ch);
+            }
+            else
+            {
+                sb.Append('-');
+            }
         }
 
         var collapsed = sb.ToString().Trim('-');
