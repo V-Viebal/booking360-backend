@@ -113,6 +113,25 @@ public sealed partial class Booking360Database
         var capacity = shop.MaxOnlinePerSlot;
         var slotMinutes = shop.SlotDurationMinutes <= 0 ? 30 : shop.SlotDurationMinutes;
 
+        // W6: status state machine — non-active shops do not return slots.
+        // Existing bookings remain (REQ-SS-009) but no NEW slots are offered.
+        var nowUtc = DateTimeOffset.UtcNow;
+        var statusBlocks = !string.Equals(shop.Status, "active", StringComparison.OrdinalIgnoreCase);
+        var pausedActive = shop.PausedUntil.HasValue && shop.PausedUntil.Value > nowUtc;
+        if (date == todayInVn && (statusBlocks || pausedActive))
+        {
+            return Array.Empty<SlotAvailability>();
+        }
+        // For future dates, only paused-with-future-end blocks; daily resets clear *_today statuses at 00:00 VN.
+        if (date > todayInVn && pausedActive && shop.PausedUntil!.Value > date.ToDateTime(shop.OpenTime, DateTimeKind.Unspecified).AddHours(-7))
+        {
+            return Array.Empty<SlotAvailability>();
+        }
+        if (date > todayInVn && string.Equals(shop.Status, "paused", StringComparison.OrdinalIgnoreCase))
+        {
+            return Array.Empty<SlotAvailability>();
+        }
+
         // Working day check (0=Sunday).
         var dow = (int)date.DayOfWeek;
         if (!shop.WorkingDays.Contains(dow))
@@ -322,13 +341,15 @@ public sealed partial class Booking360Database
 
     public async Task<int> ResetDailyShopStatusAsync(CancellationToken cancellationToken = default)
     {
-        // Daily 00:00 VN reset: paused_today -> active, clear early_close_today, clear paused_until if past.
+        // W6: Daily 00:00 VN reset includes paused_today, closed_today, temp_full -> active.
+        // Also clears early_close_today and clears paused_until if it's already in the past.
+        // Note: 'paused' (open-ended) is NOT auto-cleared; only the customer-set or expired ones are.
         const string sql = """
             with reset_status as (
                 update shops
                    set status = 'active',
                        updated_at = timezone('utc', now())
-                 where status = 'paused_today'
+                 where status in ('paused_today','closed_today','temp_full')
                 returning 1
             ),
             reset_early as (
@@ -413,4 +434,87 @@ public sealed partial class Booking360Database
             reader.IsDBNull(10) ? null : reader.GetFieldValue<DateTimeOffset>(10),
             reader.GetFieldValue<DateTimeOffset>(11));
     }
+
+    // === W6: Shop quick-toggles (status state machine + capacity + early-close) ===
+
+    /// <summary>
+    /// Set shop lifecycle status. Allowed values: active, paused_today, paused, closed_today, temp_full.
+    /// pausedUntil is only honored when status='paused' and is otherwise cleared.
+    /// </summary>
+    public async Task<bool> SetShopStatusAsync(Guid shopId, string status, DateTimeOffset? pausedUntil, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            update shops
+               set status = @status,
+                   paused_until = case when @status = 'paused' then @paused_until else null end,
+                   updated_at = timezone('utc', now())
+             where id = @id
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("id", shopId);
+        command.Parameters.AddWithValue("status", status);
+        if (pausedUntil.HasValue && string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase))
+        {
+            command.Parameters.AddWithValue("paused_until", pausedUntil.Value.UtcDateTime);
+        }
+        else
+        {
+            command.Parameters.AddWithValue("paused_until", DBNull.Value);
+        }
+        var rows = await command.ExecuteNonQueryAsync(cancellationToken);
+        return rows > 0;
+    }
+
+    /// <summary>
+    /// Set per-slot capacity (1..6). 0 is shorthand: capacity stays at its previous value but
+    /// status flips to 'temp_full' for the rest of the day; daily reset will restore to 'active'.
+    /// </summary>
+    public async Task<bool> SetShopCapacityAsync(Guid shopId, int maxOnlinePerSlot, CancellationToken cancellationToken = default)
+    {
+        if (maxOnlinePerSlot == 0)
+        {
+            return await SetShopStatusAsync(shopId, "temp_full", null, cancellationToken);
+        }
+        const string sql = """
+            update shops
+               set max_online_per_slot = @cap,
+                   status = case when status = 'temp_full' then 'active' else status end,
+                   updated_at = timezone('utc', now())
+             where id = @id
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("id", shopId);
+        command.Parameters.AddWithValue("cap", maxOnlinePerSlot);
+        var rows = await command.ExecuteNonQueryAsync(cancellationToken);
+        return rows > 0;
+    }
+
+    /// <summary>
+    /// Set or clear early_close_today (HH:mm). Cleared by the 00:00 VN daily reset.
+    /// </summary>
+    public async Task<bool> SetShopEarlyCloseAsync(Guid shopId, TimeOnly? earlyCloseToday, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            update shops
+               set early_close_today = @early,
+                   updated_at = timezone('utc', now())
+             where id = @id
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("id", shopId);
+        if (earlyCloseToday.HasValue)
+        {
+            command.Parameters.Add(new NpgsqlParameter("early", NpgsqlTypes.NpgsqlDbType.Time) { Value = earlyCloseToday.Value.ToTimeSpan() });
+        }
+        else
+        {
+            command.Parameters.AddWithValue("early", DBNull.Value);
+        }
+        var rows = await command.ExecuteNonQueryAsync(cancellationToken);
+        return rows > 0;
+    }
+
 }

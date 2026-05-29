@@ -19,6 +19,10 @@ public sealed class ShopManagementEndpoint : IEndpoint
 
     public sealed record ShopReviewReplyRequest(string Reply);
 
+    public sealed record ShopStatusRequest(string? Status, DateTimeOffset? PausedUntil);
+    public sealed record ShopCapacityRequest(int MaxOnlinePerSlot);
+    public sealed record ShopEarlyCloseRequest(string? EarlyCloseToday);
+
     public void MapEndpoint(IEndpointRouteBuilder routeBuilder)
     {
         var group = routeBuilder.MapGroup("/api/shop/m/{token:guid}")
@@ -100,6 +104,90 @@ public sealed class ShopManagementEndpoint : IEndpoint
         })
         .WithName("ShopUpdateConfig");
 
+        // === W6: status state machine + quick toggles ===
+
+        // POST set shop status (active / paused_today / paused / closed_today / temp_full)
+        group.MapPost("/status", async (
+            Guid token,
+            ShopStatusRequest request,
+            Booking360Database database,
+            CancellationToken cancellationToken) =>
+        {
+            var shop = await database.GetShopByTokenAsync(token, cancellationToken);
+            if (shop is null) return Results.NotFound(new { error = "Liên kết quản lý không hợp lệ" });
+
+            var status = (request.Status ?? string.Empty).Trim().ToLowerInvariant();
+            string[] allowed = { "active", "paused_today", "paused", "closed_today", "temp_full" };
+            if (Array.IndexOf(allowed, status) < 0)
+            {
+                return Results.BadRequest(new { error = "Trạng thái không hợp lệ" });
+            }
+            // Transition guard: pausedUntil only valid when status='paused'.
+            if (request.PausedUntil.HasValue && status != "paused")
+            {
+                return Results.BadRequest(new { error = "Thời điểm hết tạm dừng chỉ áp dụng cho trạng thái paused" });
+            }
+            if (status == "paused" && request.PausedUntil.HasValue && request.PausedUntil.Value <= DateTimeOffset.UtcNow)
+            {
+                return Results.BadRequest(new { error = "Thời điểm hết tạm dừng phải ở tương lai" });
+            }
+
+            await database.SetShopStatusAsync(shop.Id, status, request.PausedUntil, cancellationToken);
+            var refreshed = await database.GetShopByTokenAsync(token, cancellationToken);
+            return Results.Ok(MapShopForOwner(refreshed!));
+        })
+        .WithName("ShopSetStatus");
+
+        // POST set per-slot capacity (0 = temp_full shorthand, 1..6 = real cap)
+        group.MapPost("/capacity", async (
+            Guid token,
+            ShopCapacityRequest request,
+            Booking360Database database,
+            CancellationToken cancellationToken) =>
+        {
+            var shop = await database.GetShopByTokenAsync(token, cancellationToken);
+            if (shop is null) return Results.NotFound(new { error = "Liên kết quản lý không hợp lệ" });
+
+            if (request.MaxOnlinePerSlot < 0 || request.MaxOnlinePerSlot > 6)
+            {
+                return Results.BadRequest(new { error = "Sức chứa mỗi slot phải từ 0 đến 6" });
+            }
+
+            await database.SetShopCapacityAsync(shop.Id, request.MaxOnlinePerSlot, cancellationToken);
+            var refreshed = await database.GetShopByTokenAsync(token, cancellationToken);
+            return Results.Ok(MapShopForOwner(refreshed!));
+        })
+        .WithName("ShopSetCapacity");
+
+        // POST set/clear early close time for today (HH:mm or null)
+        group.MapPost("/early-close", async (
+            Guid token,
+            ShopEarlyCloseRequest request,
+            Booking360Database database,
+            CancellationToken cancellationToken) =>
+        {
+            var shop = await database.GetShopByTokenAsync(token, cancellationToken);
+            if (shop is null) return Results.NotFound(new { error = "Liên kết quản lý không hợp lệ" });
+
+            TimeOnly? early = null;
+            if (!string.IsNullOrWhiteSpace(request.EarlyCloseToday))
+            {
+                if (!TimeOnly.TryParse(request.EarlyCloseToday, out var parsed))
+                {
+                    return Results.BadRequest(new { error = "Giờ đóng cửa sớm không hợp lệ (HH:mm)" });
+                }
+                if (parsed <= shop.OpenTime)
+                {
+                    return Results.BadRequest(new { error = "Giờ đóng cửa sớm phải sau giờ mở cửa" });
+                }
+                early = parsed;
+            }
+
+            await database.SetShopEarlyCloseAsync(shop.Id, early, cancellationToken);
+            var refreshed = await database.GetShopByTokenAsync(token, cancellationToken);
+            return Results.Ok(MapShopForOwner(refreshed!));
+        })
+        .WithName("ShopSetEarlyClose");
         // POST cancel a specific booking by shop
         group.MapPost("/bookings/{bookingToken:guid}/cancel", async (
             Guid token,
