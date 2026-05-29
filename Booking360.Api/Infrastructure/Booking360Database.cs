@@ -278,6 +278,50 @@ public sealed partial class Booking360Database
             );
             """,
             cancellationToken);
+
+        await ApplyMigrationAsync(
+            connection,
+            "005_w7_late_cancel",
+            """
+            -- W7: late-cancel tracking, per-IP rate limits, phone verification.
+            -- Additive only; never drops or rewrites existing rows.
+
+            alter table bookings_v2 add column if not exists cancel_lead_minutes int;
+            alter table bookings_v2 add column if not exists customer_ip inet;
+            alter table bookings_v2 add column if not exists phone_verified_at timestamptz;
+
+            -- Per-phone rate-limit lookups: one active booking + N-per-day.
+            create index if not exists idx_bookings_v2_phone_status
+                on bookings_v2(customer_phone, status, slot_time);
+            create index if not exists idx_bookings_v2_phone_created_at
+                on bookings_v2(customer_phone, created_at desc);
+
+            -- Per-IP rate-limit lookups (sparse: nullable until W7 ships).
+            create index if not exists idx_bookings_v2_ip_created_at
+                on bookings_v2(customer_ip, created_at desc) where customer_ip is not null;
+
+            -- 1-click phone verification tokens. Single-use, 25-min TTL.
+            create table if not exists phone_verifications (
+                id uuid primary key default gen_random_uuid(),
+                token uuid not null unique default gen_random_uuid(),
+                phone text not null,
+                booking_id uuid references bookings_v2(id) on delete cascade,
+                sent_at timestamptz not null default timezone('utc', now()),
+                expires_at timestamptz not null,
+                verified_at timestamptz,
+                created_at timestamptz not null default timezone('utc', now())
+            );
+            create index if not exists idx_phone_verifications_phone
+                on phone_verifications(phone, created_at desc);
+            create index if not exists idx_phone_verifications_booking
+                on phone_verifications(booking_id);
+
+            -- No-show repeat tracking helper (counts last-30d no-shows per phone).
+            create index if not exists idx_bookings_v2_phone_noshow
+                on bookings_v2(customer_phone, no_show_marked_at desc)
+                where no_show_marked_at is not null;
+            """,
+            cancellationToken);
     }
     private static async Task ApplyMigrationAsync(NpgsqlConnection connection, string version, string script, CancellationToken cancellationToken)
     {

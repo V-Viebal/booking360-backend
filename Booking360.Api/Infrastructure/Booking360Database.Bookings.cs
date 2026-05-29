@@ -22,13 +22,28 @@ public sealed record BookingCreateInput(
     string CustomerName,
     string CustomerPhone,
     DateTimeOffset SlotTime,
-    string? Note);
+    string? Note,
+    string? CustomerIp = null);
 
 public sealed record SlotAvailability(
     DateTimeOffset SlotTime,
     int OnlineCount,
     int Capacity,
     bool Available);
+
+public sealed record ShopReliabilitySnapshot(
+    int CancelCount30d,
+    int TotalBookings30d);
+
+public sealed record PhoneVerificationRecord(
+    Guid Id,
+    Guid Token,
+    string Phone,
+    Guid? BookingId,
+    DateTimeOffset SentAt,
+    DateTimeOffset ExpiresAt,
+    DateTimeOffset? VerifiedAt,
+    DateTimeOffset CreatedAt);
 
 public sealed partial class Booking360Database
 {
@@ -37,8 +52,9 @@ public sealed partial class Booking360Database
     public async Task<BookingV2Record> CreateBookingV2Async(BookingCreateInput input, CancellationToken cancellationToken = default)
     {
         const string sql = """
-            insert into bookings_v2 (shop_id, customer_name, customer_phone, slot_time, note)
-            values (@shop_id, @customer_name, @customer_phone, @slot_time, @note)
+            insert into bookings_v2 (shop_id, customer_name, customer_phone, slot_time, note, customer_ip)
+            values (@shop_id, @customer_name, @customer_phone, @slot_time, @note,
+                    case when @customer_ip is null or @customer_ip = '' then null else cast(@customer_ip as inet) end)
             returning id, shop_id, booking_token, customer_name, customer_phone, slot_time, note, status, cancelled_by, cancel_reason, cancelled_at, created_at;
             """;
 
@@ -49,6 +65,7 @@ public sealed partial class Booking360Database
         command.Parameters.AddWithValue("customer_phone", input.CustomerPhone.Trim());
         command.Parameters.AddWithValue("slot_time", input.SlotTime.UtcDateTime);
         command.Parameters.AddWithValue("note", (object?)input.Note ?? DBNull.Value);
+        command.Parameters.AddWithValue("customer_ip", (object?)input.CustomerIp ?? DBNull.Value);
 
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken))
@@ -69,12 +86,15 @@ public sealed partial class Booking360Database
 
     public async Task<BookingV2Record?> CancelBookingByTokenAsync(Guid token, string cancelledBy, string? reason, CancellationToken cancellationToken = default)
     {
+        // W7: capture cancel_lead_minutes = floor((slot_time - now_utc) / 60s).
+        // Negative values mean the cancel happened after the slot started.
         const string sql = """
             update bookings_v2
                set status = 'cancelled',
                    cancelled_by = @by,
                    cancel_reason = @reason,
                    cancelled_at = timezone('utc', now()),
+                   cancel_lead_minutes = floor(extract(epoch from (slot_time - timezone('utc', now()))) / 60.0)::int,
                    updated_at = timezone('utc', now())
              where booking_token = @t
                and status in ('pending','confirmed')
@@ -86,7 +106,29 @@ public sealed partial class Booking360Database
         command.Parameters.AddWithValue("by", cancelledBy);
         command.Parameters.AddWithValue("reason", (object?)reason ?? DBNull.Value);
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-        return await reader.ReadAsync(cancellationToken) ? MapBookingV2(reader) : null;
+        var record = await reader.ReadAsync(cancellationToken) ? MapBookingV2(reader) : null;
+        await reader.CloseAsync();
+
+        // W7 reliability counter: if shop cancelled, recompute the rolling 30-day count.
+        if (record is not null && string.Equals(cancelledBy, "shop", StringComparison.OrdinalIgnoreCase))
+        {
+            await using var update = new NpgsqlCommand("""
+                update shops
+                   set cancel_count_30d = (
+                        select count(*) from bookings_v2
+                         where shop_id = @shop_id
+                           and cancelled_by = 'shop'
+                           and cancelled_at is not null
+                           and cancelled_at >= timezone('utc', now()) - interval '30 days'
+                       ),
+                       updated_at = timezone('utc', now())
+                 where id = @shop_id;
+                """, connection);
+            update.Parameters.AddWithValue("shop_id", record.ShopId);
+            await update.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        return record;
     }
 
     public async Task<int> CountActiveBookingsForSlotAsync(Guid shopId, DateTimeOffset slotTime, CancellationToken cancellationToken = default)
@@ -517,4 +559,195 @@ public sealed partial class Booking360Database
         return rows > 0;
     }
 
+
+    // === W7: rate limits, blacklist, phone verification, reliability ===
+
+    /// <summary>
+    /// Count CURRENTLY ACTIVE bookings (pending/confirmed) for a phone whose slot is in the future.
+    /// Used to enforce REQ-EC-014: 1 active booking per phone.
+    /// </summary>
+    public async Task<int> CountActiveBookingsForPhoneAsync(string phone, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            select count(*) from bookings_v2
+             where customer_phone = @phone
+               and status in ('pending','confirmed')
+               and slot_time > timezone('utc', now());
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("phone", phone);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result ?? 0);
+    }
+
+    /// <summary>
+    /// Count bookings created in the last 24h for a phone.
+    /// Used to enforce REQ-EC-014: max 5 bookings per phone per day.
+    /// </summary>
+    public async Task<int> CountBookingsCreatedLast24hForPhoneAsync(string phone, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            select count(*) from bookings_v2
+             where customer_phone = @phone
+               and created_at >= timezone('utc', now()) - interval '24 hours';
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("phone", phone);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result ?? 0);
+    }
+
+    /// <summary>
+    /// Count bookings created in the last hour from this IP.
+    /// REQ-TC-009: per-IP 10/h limit.
+    /// </summary>
+    public async Task<int> CountBookingsCreatedLastHourForIpAsync(string ip, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            select count(*) from bookings_v2
+             where customer_ip = cast(@ip as inet)
+               and created_at >= timezone('utc', now()) - interval '1 hour';
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("ip", ip);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result ?? 0);
+    }
+
+    /// <summary>
+    /// Count bookings created in the last 24h from this IP.
+    /// REQ-TC-009: per-IP 30/day limit.
+    /// </summary>
+    public async Task<int> CountBookingsCreatedLast24hForIpAsync(string ip, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            select count(*) from bookings_v2
+             where customer_ip = cast(@ip as inet)
+               and created_at >= timezone('utc', now()) - interval '24 hours';
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("ip", ip);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result ?? 0);
+    }
+
+    /// <summary>
+    /// REQ-EC-016: phone blacklist check.
+    /// </summary>
+    public async Task<bool> IsPhoneBlacklistedAsync(string phone, CancellationToken cancellationToken = default)
+    {
+        const string sql = "select 1 from phone_blacklist where phone = @phone limit 1;";
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("phone", phone);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is not null;
+    }
+
+    /// <summary>
+    /// REQ-EC-009: count last-30-day no-shows for a phone (1-2 warn, 3 forced-confirm, 5+ daily limit, 10+ 7d block).
+    /// </summary>
+    public async Task<int> CountNoShowsLast30DaysForPhoneAsync(string phone, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            select count(*) from bookings_v2
+             where customer_phone = @phone
+               and no_show_marked_at is not null
+               and no_show_marked_at >= timezone('utc', now()) - interval '30 days';
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("phone", phone);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result ?? 0);
+    }
+
+    /// <summary>
+    /// Reliability snapshot: cancel_count_30d (already maintained on cancel) + total bookings 30d.
+    /// </summary>
+    public async Task<ShopReliabilitySnapshot?> GetShopReliabilityAsync(Guid shopId, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            select
+                s.cancel_count_30d,
+                (select count(*) from bookings_v2 b
+                  where b.shop_id = s.id
+                    and b.created_at >= timezone('utc', now()) - interval '30 days') as total_30d
+            from shops s where s.id = @shop_id;
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("shop_id", shopId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+        return new ShopReliabilitySnapshot(
+            CancelCount30d: reader.GetInt32(0),
+            TotalBookings30d: Convert.ToInt32(reader.GetValue(1)));
+    }
+
+    // === Phone verification (1-click link, 25-min TTL, single-use) ===
+
+    public async Task<PhoneVerificationRecord> CreatePhoneVerificationAsync(string phone, Guid? bookingId, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            insert into phone_verifications (phone, booking_id, expires_at)
+            values (@phone, @booking_id, timezone('utc', now()) + interval '25 minutes')
+            returning id, token, phone, booking_id, sent_at, expires_at, verified_at, created_at;
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("phone", phone);
+        command.Parameters.AddWithValue("booking_id", (object?)bookingId ?? DBNull.Value);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) throw new InvalidOperationException("Failed to create phone verification");
+        return MapPhoneVerification(reader);
+    }
+
+    /// <summary>
+    /// Atomically consume a verification token. Returns the record on first valid use; null otherwise.
+    /// Also stamps phone_verified_at on the booking when applicable.
+    /// </summary>
+    public async Task<PhoneVerificationRecord?> ConsumePhoneVerificationAsync(Guid token, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            update phone_verifications
+               set verified_at = timezone('utc', now())
+             where token = @token
+               and verified_at is null
+               and expires_at > timezone('utc', now())
+            returning id, token, phone, booking_id, sent_at, expires_at, verified_at, created_at;
+            """;
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("token", token);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var record = await reader.ReadAsync(cancellationToken) ? MapPhoneVerification(reader) : null;
+        await reader.CloseAsync();
+        if (record?.BookingId is Guid bid)
+        {
+            await using var stamp = new NpgsqlCommand("""
+                update bookings_v2
+                   set phone_verified_at = timezone('utc', now()),
+                       updated_at = timezone('utc', now())
+                 where id = @id and phone_verified_at is null;
+                """, connection);
+            stamp.Parameters.AddWithValue("id", bid);
+            await stamp.ExecuteNonQueryAsync(cancellationToken);
+        }
+        return record;
+    }
+
+    private static PhoneVerificationRecord MapPhoneVerification(NpgsqlDataReader r) => new(
+        Id: r.GetGuid(0),
+        Token: r.GetGuid(1),
+        Phone: r.GetString(2),
+        BookingId: r.IsDBNull(3) ? null : r.GetGuid(3),
+        SentAt: r.GetFieldValue<DateTimeOffset>(4),
+        ExpiresAt: r.GetFieldValue<DateTimeOffset>(5),
+        VerifiedAt: r.IsDBNull(6) ? null : r.GetFieldValue<DateTimeOffset>(6),
+        CreatedAt: r.GetFieldValue<DateTimeOffset>(7));
 }

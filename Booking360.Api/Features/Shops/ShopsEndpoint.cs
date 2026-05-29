@@ -43,7 +43,10 @@ public sealed class ShopsEndpoint : IEndpoint
                 return Results.BadRequest(new { error = "slug is required" });
             }
             var shop = await database.GetShopBySlugAsync(slug.Trim().ToLowerInvariant(), cancellationToken);
-            return shop is null ? Results.NotFound() : Results.Ok(MapShopPublic(shop));
+            if (shop is null) return Results.NotFound();
+            // W7 REQ-EC-003: reliability badge derived from shop-side cancels last 30d.
+            var rel = await database.GetShopReliabilityAsync(shop.Id, cancellationToken);
+            return Results.Ok(MapShopPublic(shop, rel));
         })
         .WithName("GetPublicShop");
 
@@ -157,7 +160,7 @@ public sealed class ShopsEndpoint : IEndpoint
         distanceKm = item.DistanceKm
     };
 
-    private static object MapShopPublic(ShopRecord shop) => new
+    private static object MapShopPublic(ShopRecord shop, ShopReliabilitySnapshot? reliability = null) => new
     {
         id = shop.Id,
         slug = shop.Slug,
@@ -177,6 +180,29 @@ public sealed class ShopsEndpoint : IEndpoint
         status = shop.Status,
         pausedUntil = shop.PausedUntil,
         earlyCloseToday = shop.EarlyCloseToday?.ToString("HH:mm"),
-        createdAt = shop.CreatedAt
+        createdAt = shop.CreatedAt,
+        // W7 REQ-EC-003 reliability badge (last-30d).
+        reliability = ResolveReliability(reliability)
     };
+
+    /// <summary>
+    /// Map a reliability snapshot to a 4-tier badge: excellent / good / fair / poor / unknown.
+    /// Thresholds: cancel_count_30d 0 = excellent, 1-2 = good, 3-4 = fair, 5+ = poor; null = unknown.
+    /// </summary>
+    private static object ResolveReliability(ShopReliabilitySnapshot? snap)
+    {
+        if (snap is null)
+        {
+            return new { badge = "unknown", cancelCount30d = 0, totalBookings30d = 0 };
+        }
+        var cnt = snap.CancelCount30d;
+        var badge = cnt switch
+        {
+            <= 0 => "excellent",
+            <= 2 => "good",
+            <= 4 => "fair",
+            _    => "poor"
+        };
+        return new { badge, cancelCount30d = cnt, totalBookings30d = snap.TotalBookings30d };
+    }
 }
