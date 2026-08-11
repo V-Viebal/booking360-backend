@@ -56,6 +56,22 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Validate release directory access
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="${DEFAULT_RELEASE_DIR}"
+          parent_dir="$(dirname "${release_dir}")"
+          command -v docker >/dev/null
+          command -v curl >/dev/null
+          mkdir -p "${parent_dir}"
+          mkdir -p "${release_dir}"
+          if ! touch "${release_dir}/.runner-write-check"; then
+            echo "Runner cannot write to ${release_dir}. Check runner user ownership and service account."
+            stat -c '%U:%G %a %n' "${parent_dir}" "${release_dir}" || true
+            exit 1
+          fi
+          rm -f "${release_dir}/.runner-write-check"
 
       - name: Resolve backend image tag
         id: meta
