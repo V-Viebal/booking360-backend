@@ -208,7 +208,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      packages: read
+      packages: write
     env:
       IMAGE_REF: ${{ needs.build.outputs.image_ref }}
       RELEASE_SHA: ${{ github.sha }}
@@ -236,6 +236,19 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
+
+      - name: Verify the deployment job can pull the immutable image
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          docker_config="$(mktemp -d)"
+          trap 'docker --config "${docker_config}" logout ghcr.io >/dev/null 2>&1 || true; rm -rf "${docker_config}"' EXIT
+          printf '%s' "${GHCR_TOKEN}" |
+            docker --config "${docker_config}" login ghcr.io \
+              --username "${GITHUB_ACTOR}" --password-stdin >/dev/null
+          docker --config "${docker_config}" pull "${IMAGE_REF}" >/dev/null
 
       - name: Verify target-scoped contract
         shell: bash
