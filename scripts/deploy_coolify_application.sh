@@ -298,12 +298,12 @@ previous_image="$(
 if is_approved_immutable_image "${previous_image}"; then
   printf 'previous_image=%s\n' "${previous_image}" >>"${GITHUB_OUTPUT:-/dev/null}"
 else
-  if [[ "${BOOKING360_ALLOW_INITIAL_RELEASE:-false}" == "true" && -z "${previous_image}" ]]; then
+  if [[ "${BOOKING360_ALLOW_INITIAL_RELEASE:-false}" == "true" ]]; then
     previous_image=""
     printf 'previous_image=\n' >>"${GITHUB_OUTPUT:-/dev/null}"
-    echo "No previous image exists; proceeding only because the target explicitly allows its initial release."
+    echo "No previous approved image exists; proceeding only because the target explicitly allows its initial release."
   else
-    echo "No previous immutable Booking360 backend image exists; rollback is not safe." >&2
+    echo "No previous approved immutable Booking360 backend image exists; rollback is not safe." >&2
     exit 1
   fi
 fi
