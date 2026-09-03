@@ -17,7 +17,7 @@ concurrency:
 env:
   IMAGE_REPO: ghcr.io/v-viebal/booking360-backend
   INFISICAL_API_URL: https://keys.hmz.one
-  INFISICAL_ORIGIN_IP: ${{ vars.INFISICAL_ORIGIN_IP }}
+  INFISICAL_ORIGIN_IP: ''
   INFISICAL_PROJECT_SLUG: booking360-d-x-db
   EXPECTED_GITHUB_REPOSITORY: V-Viebal/booking360-backend
   COMPOSE_FILE_LOCATION: /compose.yaml
@@ -191,23 +191,23 @@ jobs:
       IMAGE_REF: ${{ needs.build.outputs.image_ref }}
       RELEASE_SHA: ${{ github.sha }}
       INFISICAL_ENV_SLUG: ${{ github.ref_name == 'main' && 'prod' || 'staging' }}
-      INFISICAL_IDENTITY_ID: ${{ vars.INFISICAL_IDENTITY_ID }}
+      INFISICAL_IDENTITY_ID: ${{ github.ref_name == 'main' && '4fe0f200-7d25-4dab-a594-235cb857cc7c' || '567d962e-e8e6-4773-9301-0e86904c7ac3' }}
       INFISICAL_SECRET_PATH: /github-actions
       INFISICAL_RUNTIME_PATH: ${{ github.ref_name == 'main' && '/backend/production' || '/backend/staging' }}
-      COOLIFY_PROJECT_UUID: ${{ vars.COOLIFY_PROJECT_UUID }}
-      COOLIFY_ENVIRONMENT_UUID: ${{ vars.COOLIFY_ENVIRONMENT_UUID }}
+      COOLIFY_PROJECT_UUID: b4sha277lbvm1fbwnmeucz8d
+      COOLIFY_ENVIRONMENT_UUID: ${{ github.ref_name == 'main' && 'b2lr47qjubg8bocj438u3brg' || 'gundabtcsxpr20csuh3zxdym' }}
       COOLIFY_ENVIRONMENT_NAME: ${{ needs.build.outputs.target_role }}
-      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_DESTINATION_UUID }}
-      COOLIFY_SERVER_UUID: ${{ vars.COOLIFY_SERVER_UUID }}
-      COOLIFY_APPLICATION_UUID: ${{ vars.COOLIFY_APPLICATION_UUID }}
-      COOLIFY_APPLICATION_NAME: ${{ vars.COOLIFY_APPLICATION_NAME }}
-      COOLIFY_PUBLIC_DOMAIN: ${{ vars.COOLIFY_PUBLIC_DOMAIN }}
-      BACKEND_HEALTH_URL: ${{ vars.BACKEND_HEALTH_URL }}
-      HEALTH_URL: ${{ vars.HEALTH_URL }}
+      COOLIFY_DESTINATION_UUID: bs8ggo84go0wk0kgc80kg0ww
+      COOLIFY_SERVER_UUID: h0kgwwcg80s40wc8coc4og8w
+      COOLIFY_APPLICATION_UUID: ${{ github.ref_name == 'main' && 'cfjkyqovn1xz6vnxfous8e4k' || 'cd0dxocgqg6m0miyruvjd18z' }}
+      COOLIFY_APPLICATION_NAME: ${{ github.ref_name == 'main' && 'booking360-backend-production' || 'booking360-backend-staging' }}
+      COOLIFY_PUBLIC_DOMAIN: ${{ github.ref_name == 'main' && 'http://cfjkyqovn1xz6vnxfous8e4k.100.76.185.111.sslip.io' || 'http://cd0dxocgqg6m0miyruvjd18z.100.76.185.111.sslip.io' }}
+      BACKEND_HEALTH_URL: ${{ github.ref_name == 'main' && 'http://cfjkyqovn1xz6vnxfous8e4k.100.76.185.111.sslip.io/health' || 'http://cd0dxocgqg6m0miyruvjd18z.100.76.185.111.sslip.io/health' }}
+      HEALTH_URL: ''
       COOLIFY_GIT_BRANCH: ${{ github.ref_name }}
       BOOKING360_BACKEND_COMPOSE_PROJECT: ${{ github.ref_name == 'main' && 'booking360-backend-production' || 'booking360-backend-staging' }}
       BOOKING360_BACKEND_NETWORK_ALIAS: ${{ github.ref_name == 'main' && 'booking360-backend' || 'booking360-backend-staging' }}
-      BOOKING360_ALLOW_INITIAL_RELEASE: ${{ vars.ALLOW_INITIAL_RELEASE }}
+      BOOKING360_ALLOW_INITIAL_RELEASE: 'true'
     steps:
       - name: Checkout deployment scripts
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -358,16 +358,16 @@ jobs:
       id-token: write
     env:
       INFISICAL_ENV_SLUG: ${{ github.ref_name == 'main' && 'prod' || 'staging' }}
-      INFISICAL_IDENTITY_ID: ${{ vars.INFISICAL_IDENTITY_ID }}
+      INFISICAL_IDENTITY_ID: ${{ github.ref_name == 'main' && '4fe0f200-7d25-4dab-a594-235cb857cc7c' || '567d962e-e8e6-4773-9301-0e86904c7ac3' }}
       INFISICAL_SECRET_PATH: /github-actions
-      COOLIFY_PROJECT_UUID: ${{ vars.COOLIFY_PROJECT_UUID }}
-      COOLIFY_ENVIRONMENT_UUID: ${{ vars.COOLIFY_ENVIRONMENT_UUID }}
+      COOLIFY_PROJECT_UUID: b4sha277lbvm1fbwnmeucz8d
+      COOLIFY_ENVIRONMENT_UUID: ${{ github.ref_name == 'main' && 'b2lr47qjubg8bocj438u3brg' || 'gundabtcsxpr20csuh3zxdym' }}
       COOLIFY_ENVIRONMENT_NAME: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
-      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_DESTINATION_UUID }}
-      COOLIFY_SERVER_UUID: ${{ vars.COOLIFY_SERVER_UUID }}
-      COOLIFY_APPLICATION_UUID: ${{ vars.COOLIFY_APPLICATION_UUID }}
-      COOLIFY_APPLICATION_NAME: ${{ vars.COOLIFY_APPLICATION_NAME }}
-      COOLIFY_PUBLIC_DOMAIN: ${{ vars.COOLIFY_PUBLIC_DOMAIN }}
+      COOLIFY_DESTINATION_UUID: bs8ggo84go0wk0kgc80kg0ww
+      COOLIFY_SERVER_UUID: h0kgwwcg80s40wc8coc4og8w
+      COOLIFY_APPLICATION_UUID: ${{ github.ref_name == 'main' && 'cfjkyqovn1xz6vnxfous8e4k' || 'cd0dxocgqg6m0miyruvjd18z' }}
+      COOLIFY_APPLICATION_NAME: ${{ github.ref_name == 'main' && 'booking360-backend-production' || 'booking360-backend-staging' }}
+      COOLIFY_PUBLIC_DOMAIN: ${{ github.ref_name == 'main' && 'http://cfjkyqovn1xz6vnxfous8e4k.100.76.185.111.sslip.io' || 'http://cd0dxocgqg6m0miyruvjd18z.100.76.185.111.sslip.io' }}
       COOLIFY_GIT_BRANCH: ${{ github.ref_name }}
       EXPECTED_GITHUB_REPOSITORY: V-Viebal/booking360-backend
     steps:

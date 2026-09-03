@@ -27,15 +27,18 @@ the application source.
 
 Each row is an independent GitHub Environment, Infisical OIDC identity,
 Coolify Application, image channel, domain, health URL, and rollback record.
-The workflow reads target UUIDs and public origins from the corresponding
-GitHub Environment variables; it fails closed when any value is absent.
+The workflow selects the target tuple from the triggering branch and keeps the
+non-secret Coolify/Infisical identifiers pinned in the repository contract.
+The GitHub Environments remain branch-scoped OIDC boundaries (`main` for
+production and `staging` for non-production); no secret value is stored in
+GitHub variables or this repository.
 
 | Role | Git ref | Infisical env/path | Compose project | Network alias | Required GitHub Environment |
 |---|---|---|---|---|---|
 | production | `main` | `prod` / `/backend/production` | `booking360-backend-production` | `booking360-backend` | `production` |
 | non-production | `staging` | `staging` / `/backend/staging` | `booking360-backend-staging` | `booking360-backend-staging` | `staging` |
 
-Required target-bound variables in both GitHub Environments:
+Required target-bound contract values for both GitHub Environments:
 
 ```text
 INFISICAL_IDENTITY_ID
@@ -49,10 +52,11 @@ COOLIFY_PUBLIC_DOMAIN
 BACKEND_HEALTH_URL
 ```
 
-`ALLOW_INITIAL_RELEASE=true` is a temporary, target-scoped exception for the
-first deployment only, when no previous immutable image exists. It must be
-removed or set to `false` after the first verified release. Every later
-release requires a previous GHCR digest so rollback remains available.
+`BOOKING360_ALLOW_INITIAL_RELEASE=true` is a temporary, target-scoped
+repository-contract switch for the first deployment only, when no previous
+immutable image exists. After the first verified staging and production
+release, commit this switch as `false`. Every later release requires a
+previous GHCR digest so rollback remains available.
 
 The production public domain is intentionally not embedded in source. The
 existing `api-book360.hmz.one` hostname is owned by a legacy `core/book360`
