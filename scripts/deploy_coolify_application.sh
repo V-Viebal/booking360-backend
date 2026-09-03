@@ -17,7 +17,7 @@ for required in \
   }
 done
 
-[[ "${IMAGE_REF}" == ghcr.io/v-viebal/booking360-backend@sha256:* ]] || {
+[[ "${IMAGE_REF}" == ghcr.io/v-viebal/booking360-backend-runtime@sha256:* ]] || {
   echo "IMAGE_REF must be the exact Booking360 backend GHCR digest." >&2
   exit 1
 }
@@ -49,7 +49,7 @@ esac
 }
 
 is_approved_immutable_image() {
-  [[ "$1" == ghcr.io/v-viebal/booking360-backend@sha256:* ]]
+  [[ "$1" == ghcr.io/v-viebal/booking360-backend-runtime@sha256:* ]]
 }
 
 api_base="${COOLIFY_URL%/}/api/v1"

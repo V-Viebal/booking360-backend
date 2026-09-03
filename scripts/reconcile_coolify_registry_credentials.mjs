@@ -59,13 +59,25 @@ function decodeJsonString(value) {
 
 function domainContains(application, expectedDomain) {
   if (!expectedDomain) return true;
-  const raw = decodeJsonString(
-    application?.docker_compose_domains ||
-      application?.fqdn ||
-      application?.domains ||
-      '',
-  );
-  return String(Array.isArray(raw) ? raw.join(' ') : raw).includes(expectedDomain);
+  const roots = [
+    application?.docker_compose_domains,
+    application?.fqdn,
+    application?.domains,
+    application?.urls,
+  ];
+
+  function flatten(value) {
+    if (value === undefined || value === null) return [];
+    if (typeof value === 'string') {
+      const decoded = decodeJsonString(value);
+      return decoded === value ? [value] : flatten(decoded);
+    }
+    if (Array.isArray(value)) return value.flatMap(flatten);
+    if (typeof value === 'object') return Object.values(value).flatMap(flatten);
+    return [String(value)];
+  }
+
+  return roots.flatMap(flatten).some((value) => value.includes(expectedDomain));
 }
 
 function assertTarget(application, expected) {

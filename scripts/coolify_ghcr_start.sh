@@ -81,7 +81,7 @@ esac
 }
 
 case "${image_ref}" in
-  ghcr.io/v-viebal/booking360-backend@sha256:*)
+  ghcr.io/v-viebal/booking360-backend-runtime@sha256:*)
     expected_repo_digest="${image_ref}"
     ;;
   *)

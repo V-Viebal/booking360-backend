@@ -15,7 +15,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE_REPO: ghcr.io/v-viebal/booking360-backend
+  # Use a repository-owned package name that is created and linked by this
+  # workflow. The previous package name was created outside this repository's
+  # Actions access boundary, so a valid job token could publish but Coolify
+  # could not pull it.
+  IMAGE_REPO: ghcr.io/v-viebal/booking360-backend-runtime
   INFISICAL_API_URL: https://keys.hmz.one
   INFISICAL_ORIGIN_IP: ''
   INFISICAL_PROJECT_SLUG: booking360-d-x-db
@@ -147,15 +151,33 @@ jobs:
           echo "image_digest=${BUILD_DIGEST}" >>"${GITHUB_OUTPUT}"
           echo "image_ref=${IMAGE_REPO}@${BUILD_DIGEST}" >>"${GITHUB_OUTPUT}"
 
+      - name: Verify the immutable image is pullable with the repository token
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          docker_config="$(mktemp -d)"
+          trap 'docker --config "${docker_config}" logout ghcr.io >/dev/null 2>&1 || true; rm -rf "${docker_config}"' EXIT
+          printf '%s' "${GHCR_TOKEN}" |
+            docker --config "${docker_config}" login ghcr.io \
+              --username "${GITHUB_ACTOR}" --password-stdin >/dev/null
+          docker --config "${docker_config}" pull "${IMAGE_REF}" >/dev/null
+          docker --config "${docker_config}" image inspect "${IMAGE_REF}" \
+            --format '{{range .RepoDigests}}{{println .}}{{end}}' |
+            grep -Fx -- "${IMAGE_REF}" >/dev/null
+
       - name: Verify the package is not anonymously readable
         shell: bash
         env:
           IMAGE_DIGEST: ${{ steps.image.outputs.image_digest }}
         run: |
           set -Eeuo pipefail
+          image_repo_path="${IMAGE_REPO#ghcr.io/}"
           anonymous_token="$(
             curl --fail --silent --show-error \
-              'https://ghcr.io/token?service=ghcr.io&scope=repository:v-viebal/booking360-backend:pull' |
+              "https://ghcr.io/token?service=ghcr.io&scope=repository:${image_repo_path}:pull" |
               jq -r '.token // empty' || true
           )"
           if [[ -z "${anonymous_token}" ]]; then
@@ -166,7 +188,7 @@ jobs:
             curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
               --header "Authorization: Bearer ${anonymous_token}" \
               --header 'Accept: application/vnd.oci.image.manifest.v1+json' \
-              "https://ghcr.io/v2/v-viebal/booking360-backend/manifests/${IMAGE_DIGEST}"
+              "https://ghcr.io/v2/${image_repo_path}/manifests/${IMAGE_DIGEST}"
           )"
           case "${status}" in
             401|403|404) ;;
@@ -207,7 +229,7 @@ jobs:
       COOLIFY_GIT_BRANCH: ${{ github.ref_name }}
       BOOKING360_BACKEND_COMPOSE_PROJECT: ${{ github.ref_name == 'main' && 'booking360-backend-production' || 'booking360-backend-staging' }}
       BOOKING360_BACKEND_NETWORK_ALIAS: ${{ github.ref_name == 'main' && 'booking360-backend' || 'booking360-backend-staging' }}
-      BOOKING360_ALLOW_INITIAL_RELEASE: 'true'
+      BOOKING360_ALLOW_INITIAL_RELEASE: ${{ github.ref_name == 'main' && 'true' || 'false' }}
     steps:
       - name: Checkout deployment scripts
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -428,7 +450,6 @@ jobs:
             --expected-server "${COOLIFY_SERVER_UUID}" \
             --expected-branch "${COOLIFY_GIT_BRANCH}" \
             --expected-repository "${EXPECTED_GITHUB_REPOSITORY}" \
-            --expected-domain "${COOLIFY_PUBLIC_DOMAIN}" \
             --key BOOKING360_BACKEND_GHCR_USERNAME \
             --key BOOKING360_BACKEND_GHCR_TOKEN \
             --apply

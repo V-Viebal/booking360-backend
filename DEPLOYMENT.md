@@ -12,7 +12,7 @@ the application source.
 | GitHub repository | `V-Viebal/booking360-backend` |
 | Workflow | `.github/workflows/deploy.yaml` |
 | Runner | GitHub-hosted `ubuntu-latest` |
-| Image | `ghcr.io/v-viebal/booking360-backend@sha256:<digest>` |
+| Image | `ghcr.io/v-viebal/booking360-backend-runtime@sha256:<digest>` |
 | Image tags | full source SHA and target role (`staging` or `production`) |
 | Build metadata | BuildKit GHA cache, SBOM, max provenance |
 | Coolify project | `booking360` (`b4sha277lbvm1fbwnmeucz8d`) |
