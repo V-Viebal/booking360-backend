@@ -1,250 +1,434 @@
 name: Booking360 Backend Deploy
 
-permissions:
-  contents: read
-  id-token: write
-
 on:
   push:
     branches:
       - main
+      - staging
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: booking360-backend-production
+  group: booking360-backend-${{ github.ref_name }}
   cancel-in-progress: false
 
 env:
+  IMAGE_REPO: ghcr.io/v-viebal/booking360-backend
   INFISICAL_API_URL: https://keys.hmz.one
-  INFISICAL_PROJECT_SLUG: infra-7-yf9
-  INFISICAL_IDENTITY_ID: 06f616b2-9fa0-4094-9cec-388ef8e373c1
-  INFISICAL_ENV_SLUG: prod
-  INFISICAL_DEPLOY_SHARED_PATH: /booking360/deploy/shared
-  INFISICAL_RUNTIME_PATH: /booking360/production/backend
-  IMAGE_REPO: vviebal/booking360-backend
-  DEFAULT_RELEASE_DIR: /opt/apps/booking360
-  API_DOMAIN: api-book360.hmz.one
-  FRONTEND_DOMAIN: book360.hmz.one
+  INFISICAL_ORIGIN_IP: ${{ vars.INFISICAL_ORIGIN_IP }}
+  INFISICAL_PROJECT_SLUG: booking360-d-x-db
+  EXPECTED_GITHUB_REPOSITORY: V-Viebal/booking360-backend
+  COMPOSE_FILE_LOCATION: /compose.yaml
+  COMPOSE_START_COMMAND: bash scripts/coolify_ghcr_start.sh
 
 jobs:
-  build:
+  validate:
+    name: Validate source and deployment contract
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout triggering revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+      - name: Assert source identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test "${GITHUB_REPOSITORY}" = "${EXPECTED_GITHUB_REPOSITORY}"
+          case "${GITHUB_REF}" in
+            refs/heads/main|refs/heads/staging) ;;
+            *) echo "Unsupported release ref: ${GITHUB_REF}" >&2; exit 1 ;;
+          esac
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: 10.0.x
 
-      - name: Restore
+      - name: Restore dependencies
         run: dotnet restore Booking360.slnx
 
-      - name: Build
+      - name: Build backend
         run: dotnet build Booking360.slnx --no-restore --configuration Release /p:OpenApiGenerateDocuments=false
 
-  deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs:
-      - build
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - 3rd
+      - name: Validate shell and Compose contracts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash -n scripts/coolify_ghcr_start.sh
+          bash -n scripts/coolify_registry_credentials.sh
+          bash -n scripts/deploy_coolify_application.sh
+          node --check scripts/reconcile_coolify_registry_credentials.mjs
+          touch .env
+          trap 'rm -f .env' EXIT
+          docker compose -f compose.yaml config -q
+
+  build:
+    name: Build immutable image on GitHub-hosted runner
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_ref: ${{ steps.image.outputs.image_ref }}
+      image_digest: ${{ steps.image.outputs.image_digest }}
+      target_role: ${{ steps.target.outputs.role }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Validate release directory access
+      - name: Checkout exact source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Resolve target role
+        id: target
         shell: bash
         run: |
-          set -euo pipefail
-          release_dir="${DEFAULT_RELEASE_DIR}"
-          parent_dir="$(dirname "${release_dir}")"
-          command -v docker >/dev/null
-          command -v curl >/dev/null
-          mkdir -p "${parent_dir}"
-          mkdir -p "${release_dir}"
-          if ! touch "${release_dir}/.runner-write-check"; then
-            echo "Runner cannot write to ${release_dir}. Check runner user ownership and service account."
-            stat -c '%U:%G %a %n' "${parent_dir}" "${release_dir}" || true
-            exit 1
-          fi
-          rm -f "${release_dir}/.runner-write-check"
-
-      - name: Resolve backend image tag
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          short_sha="${GITHUB_SHA::12}"
-          echo "image_tag=${IMAGE_REPO}:production-${short_sha}" >> "$GITHUB_OUTPUT"
-
-      - name: Fetch Docker Hub credentials from Infisical
-        uses: Infisical/secrets-action@v1.0.12
-        with:
-          method: "oidc"
-          identity-id: ${{ env.INFISICAL_IDENTITY_ID }}
-          oidc-audience: "https://github.com/V-Viebal"
-          project-slug: ${{ env.INFISICAL_PROJECT_SLUG }}
-          env-slug: ${{ env.INFISICAL_ENV_SLUG }}
-          domain: ${{ env.INFISICAL_API_URL }}
-          secret-path: ${{ env.INFISICAL_DEPLOY_SHARED_PATH }}
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ env.DOCKERHUB_USERNAME }}
-          password: ${{ env.DOCKERHUB_TOKEN }}
+          set -Eeuo pipefail
+          case "${GITHUB_REF}" in
+            refs/heads/main) role=production ;;
+            refs/heads/staging) role=staging ;;
+            *) echo "Unsupported release ref: ${GITHUB_REF}" >&2; exit 1 ;;
+          esac
+          echo "role=${role}" >>"${GITHUB_OUTPUT}"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Build and push backend image
-        uses: docker/build-push-action@v6
+      - name: Log in to private GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and publish image with SBOM and provenance
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./Dockerfile
+          platforms: linux/amd64
           push: true
+          build-args: |
+            RELEASE_SHA=${{ github.sha }}
           tags: |
-            ${{ steps.meta.outputs.image_tag }}
-            ${{ env.IMAGE_REPO }}:production
+            ${{ env.IMAGE_REPO }}:${{ github.sha }}
+            ${{ env.IMAGE_REPO }}:${{ steps.target.outputs.role }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=booking360-backend-${{ steps.target.outputs.role }}
+          cache-to: type=gha,mode=max,scope=booking360-backend-${{ steps.target.outputs.role }}
+          provenance: mode=max
+          sbom: true
 
-      - name: Fetch runtime env file from Infisical
-        uses: Infisical/secrets-action@v1.0.12
+      - name: Resolve exact registry digest
+        id: image
+        shell: bash
+        env:
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${BUILD_DIGEST}" == sha256:* ]] || {
+            echo "Build did not return an OCI digest." >&2
+            exit 1
+          }
+          echo "image_digest=${BUILD_DIGEST}" >>"${GITHUB_OUTPUT}"
+          echo "image_ref=${IMAGE_REPO}@${BUILD_DIGEST}" >>"${GITHUB_OUTPUT}"
+
+      - name: Verify the package is not anonymously readable
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.image_digest }}
+        run: |
+          set -Eeuo pipefail
+          anonymous_token="$(
+            curl --fail --silent --show-error \
+              'https://ghcr.io/token?service=ghcr.io&scope=repository:v-viebal/booking360-backend:pull' |
+              jq -r '.token // empty' || true
+          )"
+          if [[ -z "${anonymous_token}" ]]; then
+            echo "GHCR denied an anonymous pull token as expected."
+            exit 0
+          fi
+          status="$(
+            curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+              --header "Authorization: Bearer ${anonymous_token}" \
+              --header 'Accept: application/vnd.oci.image.manifest.v1+json' \
+              "https://ghcr.io/v2/v-viebal/booking360-backend/manifests/${IMAGE_DIGEST}"
+          )"
+          case "${status}" in
+            401|403|404) ;;
+            200)
+              echo "GHCR image is anonymously readable; expected a private package." >&2
+              exit 1
+              ;;
+            *) echo "Unexpected anonymous GHCR response: HTTP ${status}" >&2; exit 1 ;;
+          esac
+
+  deploy:
+    name: Deploy exact digest through locked Coolify Application
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: ${{ needs.build.outputs.target_role }}
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    env:
+      IMAGE_REF: ${{ needs.build.outputs.image_ref }}
+      RELEASE_SHA: ${{ github.sha }}
+      INFISICAL_ENV_SLUG: ${{ github.ref_name == 'main' && 'prod' || 'staging' }}
+      INFISICAL_IDENTITY_ID: ${{ vars.INFISICAL_IDENTITY_ID }}
+      INFISICAL_SECRET_PATH: /github-actions
+      INFISICAL_RUNTIME_PATH: ${{ github.ref_name == 'main' && '/backend/production' || '/backend/staging' }}
+      COOLIFY_PROJECT_UUID: ${{ vars.COOLIFY_PROJECT_UUID }}
+      COOLIFY_ENVIRONMENT_UUID: ${{ vars.COOLIFY_ENVIRONMENT_UUID }}
+      COOLIFY_ENVIRONMENT_NAME: ${{ needs.build.outputs.target_role }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_DESTINATION_UUID }}
+      COOLIFY_SERVER_UUID: ${{ vars.COOLIFY_SERVER_UUID }}
+      COOLIFY_APPLICATION_UUID: ${{ vars.COOLIFY_APPLICATION_UUID }}
+      COOLIFY_APPLICATION_NAME: ${{ vars.COOLIFY_APPLICATION_NAME }}
+      COOLIFY_PUBLIC_DOMAIN: ${{ vars.COOLIFY_PUBLIC_DOMAIN }}
+      BACKEND_HEALTH_URL: ${{ vars.BACKEND_HEALTH_URL }}
+      HEALTH_URL: ${{ vars.HEALTH_URL }}
+      COOLIFY_GIT_BRANCH: ${{ github.ref_name }}
+      BOOKING360_BACKEND_COMPOSE_PROJECT: ${{ github.ref_name == 'main' && 'booking360-backend-production' || 'booking360-backend-staging' }}
+      BOOKING360_BACKEND_NETWORK_ALIAS: ${{ github.ref_name == 'main' && 'booking360-backend' || 'booking360-backend-staging' }}
+      BOOKING360_ALLOW_INITIAL_RELEASE: ${{ vars.ALLOW_INITIAL_RELEASE }}
+    steps:
+      - name: Checkout deployment scripts
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          method: "oidc"
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Verify target-scoped contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : "${INFISICAL_PROJECT_SLUG:?INFISICAL_PROJECT_SLUG is not configured}"
+          : "${INFISICAL_IDENTITY_ID:?Target OIDC identity is not configured}"
+          : "${COOLIFY_PROJECT_UUID:?COOLIFY_PROJECT_UUID is not configured}"
+          : "${COOLIFY_ENVIRONMENT_UUID:?COOLIFY_ENVIRONMENT_UUID is not configured}"
+          : "${COOLIFY_DESTINATION_UUID:?COOLIFY_DESTINATION_UUID is not configured}"
+          : "${COOLIFY_SERVER_UUID:?COOLIFY_SERVER_UUID is not configured}"
+          : "${COOLIFY_APPLICATION_UUID:?Target Coolify Application is not configured}"
+          : "${COOLIFY_APPLICATION_NAME:?Target Coolify Application name is not configured}"
+          : "${COOLIFY_PUBLIC_DOMAIN:?Target public domain is not configured}"
+          : "${BACKEND_HEALTH_URL:?Backend health URL is not configured}"
+          [[ "${COOLIFY_APPLICATION_UUID}" != UNCONFIGURED_* ]] || {
+            echo "The target Coolify Application is intentionally not configured yet." >&2
+            exit 1
+          }
+
+      - name: Verify GitHub OIDC claims without exposing the token
+        shell: bash
+        env:
+          EXPECTED_OIDC_SUBJECT: repo:${{ github.repository }}:environment:${{ needs.build.outputs.target_role }}
+        run: |
+          set -Eeuo pipefail
+          : "${ACTIONS_ID_TOKEN_REQUEST_URL:?GitHub OIDC request URL is missing}"
+          : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?GitHub OIDC request token is missing}"
+          oidc_token="$(
+            curl --fail --silent --show-error \
+              --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Fgithub.com%2FV-Viebal" |
+              jq -r '.value // empty'
+          )"
+          : "${oidc_token:?GitHub did not return an OIDC token}"
+          claims="$(
+            printf '%s' "${oidc_token}" |
+              python3 -c '
+          import base64, json, sys
+          token = sys.stdin.read().strip()
+          payload = token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload))
+          print(json.dumps({"sub": claims.get("sub"), "aud": claims.get("aud")}))
+          '
+          )"
+          actual_subject="$(jq -r '.sub // empty' <<<"${claims}")"
+          actual_audience="$(jq -r '.aud // empty' <<<"${claims}")"
+          echo "GitHub OIDC subject: ${actual_subject}"
+          echo "GitHub OIDC audience: ${actual_audience}"
+          test "${actual_subject}" = "${EXPECTED_OIDC_SUBJECT}"
+          test "${actual_audience}" = "https://github.com/V-Viebal"
+          unset oidc_token
+
+      - name: Route Infisical API through its origin when configured
+        if: ${{ env.INFISICAL_ORIGIN_IP != '' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "${INFISICAL_ORIGIN_IP} keys.hmz.one" | sudo tee -a /etc/hosts >/dev/null
+
+      - name: Fetch target-scoped Coolify credentials from Infisical
+        uses: Infisical/secrets-action@a663da43e1541832614bfd9dcf9ab67381ea2b98 # v1.0.12
+        with:
+          method: oidc
           identity-id: ${{ env.INFISICAL_IDENTITY_ID }}
-          oidc-audience: "https://github.com/V-Viebal"
+          oidc-audience: https://github.com/V-Viebal
+          project-slug: ${{ env.INFISICAL_PROJECT_SLUG }}
+          env-slug: ${{ env.INFISICAL_ENV_SLUG }}
+          domain: ${{ env.INFISICAL_API_URL }}
+          secret-path: ${{ env.INFISICAL_SECRET_PATH }}
+
+      - name: Fetch target runtime settings from Infisical
+        uses: Infisical/secrets-action@a663da43e1541832614bfd9dcf9ab67381ea2b98 # v1.0.12
+        with:
+          method: oidc
+          identity-id: ${{ env.INFISICAL_IDENTITY_ID }}
+          oidc-audience: https://github.com/V-Viebal
           project-slug: ${{ env.INFISICAL_PROJECT_SLUG }}
           env-slug: ${{ env.INFISICAL_ENV_SLUG }}
           domain: ${{ env.INFISICAL_API_URL }}
           secret-path: ${{ env.INFISICAL_RUNTIME_PATH }}
-          export-type: "file"
-          file-output-path: "runtime.env"
 
-      - name: Prepare release inputs
+      - name: Deploy, poll, verify, and roll back on failure
+        id: deploy
+        shell: bash
+        env:
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          : "${COOLIFY_URL:?COOLIFY_URL was not provided by Infisical}"
+          : "${COOLIFY_API_TOKEN:?COOLIFY_API_TOKEN was not provided by Infisical}"
+          bash scripts/deploy_coolify_application.sh
+
+      - name: Emit secret-free deployment receipt
         shell: bash
         run: |
-          set -euo pipefail
-          release_dir="${DEFAULT_RELEASE_DIR}"
-          runtime_source=""
+          set -Eeuo pipefail
+          receipt="$(
+            jq -cn \
+              --arg repository "${GITHUB_REPOSITORY}" \
+              --arg revision "${GITHUB_SHA}" \
+              --arg run_id "${GITHUB_RUN_ID}" \
+              --arg role "${COOLIFY_ENVIRONMENT_NAME}" \
+              --arg image "${IMAGE_REF}" \
+              --arg application "${COOLIFY_APPLICATION_UUID}" \
+              --arg deployment "${{ steps.deploy.outputs.deployment_uuid }}" \
+              --arg previous "${{ steps.deploy.outputs.previous_image }}" \
+              --arg runtime_image_id "${{ steps.deploy.outputs.runtime_image_id }}" \
+              --arg domain "${COOLIFY_PUBLIC_DOMAIN}" \
+              '{
+                repository:$repository,
+                revision:$revision,
+                workflow_run_id:$run_id,
+                target_role:$role,
+                image:$image,
+                coolify_application_uuid:$application,
+                deployment_uuid:$deployment,
+                previous_image:$previous,
+                runtime_image_id:$runtime_image_id,
+                domain:$domain,
+                health:"verified",
+                sbom:"published",
+                provenance:"published",
+                registry_credentials:"cleared_by_cleanup_job"
+              }'
+          )"
+          printf '%s\n' "${receipt}" | tee -a "${GITHUB_STEP_SUMMARY}"
 
-          for candidate in \
-            "./runtime.env" \
-            "../runtime.env" \
-            "../$(basename "$PWD")runtime.env"
-          do
-            if [ -f "$candidate" ]; then
-              runtime_source="$candidate"
-              break
-            fi
-          done
-
-          if [ -z "$runtime_source" ]; then
-            runtime_source="$(find .. -maxdepth 1 -type f -name '*runtime.env' | head -n 1 || true)"
-          fi
-
-          if [ -z "$runtime_source" ]; then
-            echo "Failed to locate exported runtime env file"
-            ls -la .
-            ls -la ..
-            exit 1
-          fi
-
-          mkdir -p "${release_dir}"
-          mv "$runtime_source" "${release_dir}/.env.backend.runtime"
-          echo "RELEASE_DIR=${release_dir}" >> "$GITHUB_ENV"
-          echo "BACKEND_IMAGE_TAG=${{ steps.meta.outputs.image_tag }}" >> "$GITHUB_ENV"
-
-      - name: Write backend compose file
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat > "${RELEASE_DIR}/compose.backend.yml" <<EOF
-          services:
-            booking360-backend:
-              image: ${BACKEND_IMAGE_TAG}
-              container_name: booking360-backend
-              restart: unless-stopped
-              extra_hosts:
-                - "host.docker.internal:host-gateway"
-              env_file:
-                - .env.backend.runtime
-              environment:
-                ASPNETCORE_URLS: http://+:8101
-                ASPNETCORE_ENVIRONMENT: Production
-                APP_ENV_PREFIX: BOOKING360
-                APP_FRONTEND_URL: https://${FRONTEND_DOMAIN}
-              labels:
-                - "traefik.enable=true"
-                - "traefik.docker.network=coolify"
-                - "traefik.http.routers.booking360-backend.rule=Host(\`${API_DOMAIN}\`)"
-                - "traefik.http.routers.booking360-backend.entrypoints=https"
-                - "traefik.http.routers.booking360-backend.tls=true"
-                - "traefik.http.routers.booking360-backend.tls.certresolver=letsencrypt"
-                - "traefik.http.services.booking360-backend.loadbalancer.server.port=8101"
-              networks:
-                - coolify
-
-          networks:
-            coolify:
-              external: true
-          EOF
-
-      - name: Pull and start backend release
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "${RELEASE_DIR}"
-          docker pull "${BACKEND_IMAGE_TAG}"
-          docker rm -f booking360-backend >/dev/null 2>&1 || true
-          docker compose -f compose.backend.yml up -d --no-deps --force-recreate booking360-backend
-
-      - name: Verify deployed image matches build
-        shell: bash
-        run: |
-          set -euo pipefail
-          running_image="$(docker inspect --format '{{.Config.Image}}' booking360-backend)"
-          if [ "$running_image" != "${BACKEND_IMAGE_TAG}" ]; then
-            echo "Running image $running_image does not match expected ${BACKEND_IMAGE_TAG}"
-            exit 1
-          fi
-          echo "Verified running image: $running_image"
-
-      - name: Health check
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in $(seq 1 60); do
-            if curl -kfsSL --resolve "${API_DOMAIN}:443:127.0.0.1" "https://${API_DOMAIN}/health"; then
-              break
-            fi
-
-            if [ "$attempt" -eq 60 ]; then
-              echo "Local Traefik health check failed after ${attempt} attempts"
-              docker logs --tail 120 booking360-backend || true
-              exit 1
-            fi
-
-            sleep 5
-          done
-
-  verify:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  registry_credentials_cleanup:
+    name: Independently clear temporary GHCR credentials
+    if: ${{ always() && needs.build.result == 'success' && (needs.deploy.result == 'success' || needs.deploy.result == 'failure' || needs.deploy.result == 'cancelled') }}
     needs:
+      - build
       - deploy
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
-      - 3rd
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      INFISICAL_ENV_SLUG: ${{ github.ref_name == 'main' && 'prod' || 'staging' }}
+      INFISICAL_IDENTITY_ID: ${{ vars.INFISICAL_IDENTITY_ID }}
+      INFISICAL_SECRET_PATH: /github-actions
+      COOLIFY_PROJECT_UUID: ${{ vars.COOLIFY_PROJECT_UUID }}
+      COOLIFY_ENVIRONMENT_UUID: ${{ vars.COOLIFY_ENVIRONMENT_UUID }}
+      COOLIFY_ENVIRONMENT_NAME: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_DESTINATION_UUID }}
+      COOLIFY_SERVER_UUID: ${{ vars.COOLIFY_SERVER_UUID }}
+      COOLIFY_APPLICATION_UUID: ${{ vars.COOLIFY_APPLICATION_UUID }}
+      COOLIFY_APPLICATION_NAME: ${{ vars.COOLIFY_APPLICATION_NAME }}
+      COOLIFY_PUBLIC_DOMAIN: ${{ vars.COOLIFY_PUBLIC_DOMAIN }}
+      COOLIFY_GIT_BRANCH: ${{ github.ref_name }}
+      EXPECTED_GITHUB_REPOSITORY: V-Viebal/booking360-backend
     steps:
-      - name: Verify health endpoint
+      - name: Checkout exact cleanup implementation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Verify cleanup target exists
         shell: bash
         run: |
-          set -euo pipefail
-          response="$(curl -fsSL "https://${API_DOMAIN}/health")"
-          echo "$response"
-          echo "$response" | grep -qiE 'ok|healthy'
+          set -Eeuo pipefail
+          : "${INFISICAL_PROJECT_SLUG:?INFISICAL_PROJECT_SLUG is not configured}"
+          : "${INFISICAL_IDENTITY_ID:?Target OIDC identity is not configured}"
+          : "${COOLIFY_PROJECT_UUID:?COOLIFY_PROJECT_UUID is not configured}"
+          : "${COOLIFY_ENVIRONMENT_UUID:?COOLIFY_ENVIRONMENT_UUID is not configured}"
+          : "${COOLIFY_DESTINATION_UUID:?COOLIFY_DESTINATION_UUID is not configured}"
+          : "${COOLIFY_SERVER_UUID:?COOLIFY_SERVER_UUID is not configured}"
+          : "${COOLIFY_APPLICATION_UUID:?Target Coolify Application is not configured}"
+          [[ "${COOLIFY_APPLICATION_UUID}" != UNCONFIGURED_* ]] || {
+            echo "Cleanup target is intentionally not configured yet." >&2
+            exit 1
+          }
+
+      - name: Route Infisical API through its origin when configured
+        if: ${{ env.INFISICAL_ORIGIN_IP != '' }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "${INFISICAL_ORIGIN_IP} keys.hmz.one" | sudo tee -a /etc/hosts >/dev/null
+
+      - name: Fetch target-scoped cleanup credentials
+        uses: Infisical/secrets-action@a663da43e1541832614bfd9dcf9ab67381ea2b98 # v1.0.12
+        with:
+          method: oidc
+          identity-id: ${{ env.INFISICAL_IDENTITY_ID }}
+          oidc-audience: https://github.com/V-Viebal
+          project-slug: ${{ env.INFISICAL_PROJECT_SLUG }}
+          env-slug: ${{ env.INFISICAL_ENV_SLUG }}
+          domain: ${{ env.INFISICAL_API_URL }}
+          secret-path: ${{ env.INFISICAL_SECRET_PATH }}
+
+      - name: Delete and verify all temporary registry rows
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : "${COOLIFY_URL:?COOLIFY_URL was not provided by Infisical}"
+          : "${COOLIFY_API_TOKEN:?COOLIFY_API_TOKEN was not provided by Infisical}"
+          bash scripts/coolify_registry_credentials.sh clear
+          node scripts/reconcile_coolify_registry_credentials.mjs \
+            --application "${COOLIFY_APPLICATION_UUID}" \
+            --expected-name "${COOLIFY_APPLICATION_NAME}" \
+            --expected-project "${COOLIFY_PROJECT_UUID}" \
+            --expected-environment "${COOLIFY_ENVIRONMENT_NAME}" \
+            --expected-environment-uuid "${COOLIFY_ENVIRONMENT_UUID}" \
+            --expected-destination "${COOLIFY_DESTINATION_UUID}" \
+            --expected-server "${COOLIFY_SERVER_UUID}" \
+            --expected-branch "${COOLIFY_GIT_BRANCH}" \
+            --expected-repository "${EXPECTED_GITHUB_REPOSITORY}" \
+            --expected-domain "${COOLIFY_PUBLIC_DOMAIN}" \
+            --key BOOKING360_BACKEND_GHCR_USERNAME \
+            --key BOOKING360_BACKEND_GHCR_TOKEN \
+            --apply

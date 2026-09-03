@@ -104,6 +104,7 @@ try
                 ValidAudiences = new[] { booking360Options.ApiResourceIndicator },
                 ValidateLifetime = true,
                 ValidateIssuerSigningKey = true,
+                ClockSkew = TimeSpan.FromMinutes(1),
                 NameClaimType = "sub",
                 RoleClaimType = "roles"
             };

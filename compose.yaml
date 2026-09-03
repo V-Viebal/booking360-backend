@@ -1,0 +1,25 @@
+services:
+  backend:
+    image: ${BOOKING360_BACKEND_IMAGE:-booking360-backend:local}
+    pull_policy: ${BOOKING360_BACKEND_PULL_POLICY:-if_not_present}
+    restart: unless-stopped
+    ports:
+      - "8101"
+    env_file:
+      - .env
+    environment:
+      ASPNETCORE_URLS: ${ASPNETCORE_URLS:-http://+:8101}
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      APP_ENV_PREFIX: ${APP_ENV_PREFIX:-BOOKING360}
+      BOOKING360_BACKEND_ENVIRONMENT: ${BOOKING360_BACKEND_ENVIRONMENT:-staging}
+      BOOKING360_RELEASE_SHA: ${BOOKING360_RELEASE_SHA:-development}
+      APP_FRONTEND_URL: ${APP_FRONTEND_URL:-}
+    networks:
+      coolify:
+        aliases:
+          - ${BOOKING360_BACKEND_NETWORK_ALIAS:-booking360-backend-staging}
+
+networks:
+  coolify:
+    external: true
+    name: coolify
