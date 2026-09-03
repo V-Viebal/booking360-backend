@@ -229,7 +229,7 @@ jobs:
       COOLIFY_GIT_BRANCH: ${{ github.ref_name }}
       BOOKING360_BACKEND_COMPOSE_PROJECT: ${{ github.ref_name == 'main' && 'booking360-backend-production' || 'booking360-backend-staging' }}
       BOOKING360_BACKEND_NETWORK_ALIAS: ${{ github.ref_name == 'main' && 'booking360-backend' || 'booking360-backend-staging' }}
-      BOOKING360_ALLOW_INITIAL_RELEASE: ${{ github.ref_name == 'main' && 'true' || 'false' }}
+      BOOKING360_ALLOW_INITIAL_RELEASE: 'true'
     steps:
       - name: Checkout deployment scripts
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
