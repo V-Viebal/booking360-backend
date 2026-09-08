@@ -21,7 +21,7 @@ the application source.
 | Custom start | `bash scripts/coolify_ghcr_start.sh` |
 | Image environment key | `BOOKING360_BACKEND_IMAGE` |
 | Infisical project | `booking360` (`booking360-d-x-db`) |
-| Infisical CI path | `/github-actions` |
+| Infisical CI path | `/deploy/github-actions` |
 
 ## Target roles
 
@@ -35,8 +35,8 @@ GitHub variables or this repository.
 
 | Role | Git ref | Infisical env/path | Compose project | Network alias | Required GitHub Environment |
 |---|---|---|---|---|---|
-| production | `main` | `prod` / `/backend/production` | `booking360-backend-production` | `booking360-backend` | `production` |
-| non-production | `staging` | `staging` / `/backend/staging` | `booking360-backend-staging` | `booking360-backend-staging` | `staging` |
+| production | `main` | `prod` / `/app/backend` | `booking360-backend-production` | `booking360-backend` | `production` |
+| non-production | `staging` | `staging` / `/app/backend` | `booking360-backend-staging` | `booking360-backend-staging` | `staging` |
 
 Required target-bound contract values for both GitHub Environments:
 

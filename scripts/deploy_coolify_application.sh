@@ -243,6 +243,7 @@ verify_health_url() {
   for attempt in $(seq 1 60); do
     response="$(
       curl --fail --silent --show-error \
+        --location --insecure \
         -H 'User-Agent: Booking360-Release-Verify/1.0' \
         -H 'Cache-Control: no-cache, no-store' \
         "${url}${query_separator}release=${RELEASE_SHA:0:12}" 2>/dev/null ||
