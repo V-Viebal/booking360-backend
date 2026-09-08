@@ -215,7 +215,8 @@ verify_runtime_identity() {
   for attempt in $(seq 1 12); do
     logs="$(
       jq -r '.logs // .output // .deployment_logs // .deploymentLogs // empty' \
-        <<<"${deployment_json}" 2>/dev/null || true
+        <<<"${deployment_json}" 2>/dev/null |
+        sed 's#\\/#/#g' || true
     )"
     if grep -F "runtime_image_ref=${IMAGE_REF}" <<<"${logs}" >/dev/null &&
       grep -F 'repo_digest_match=true' <<<"${logs}" >/dev/null; then
