@@ -214,8 +214,8 @@ jobs:
       RELEASE_SHA: ${{ github.sha }}
       INFISICAL_ENV_SLUG: ${{ github.ref_name == 'main' && 'prod' || 'staging' }}
       INFISICAL_IDENTITY_ID: ${{ github.ref_name == 'main' && '4fe0f200-7d25-4dab-a594-235cb857cc7c' || '567d962e-e8e6-4773-9301-0e86904c7ac3' }}
-      INFISICAL_SECRET_PATH: /github-actions
-      INFISICAL_RUNTIME_PATH: ${{ github.ref_name == 'main' && '/backend/production' || '/backend/staging' }}
+      INFISICAL_SECRET_PATH: /deploy/github-actions
+      INFISICAL_RUNTIME_PATH: /app/backend
       COOLIFY_PROJECT_UUID: b4sha277lbvm1fbwnmeucz8d
       COOLIFY_ENVIRONMENT_UUID: ${{ github.ref_name == 'main' && 'b2lr47qjubg8bocj438u3brg' || 'gundabtcsxpr20csuh3zxdym' }}
       COOLIFY_ENVIRONMENT_NAME: ${{ needs.build.outputs.target_role }}
@@ -394,7 +394,7 @@ jobs:
     env:
       INFISICAL_ENV_SLUG: ${{ github.ref_name == 'main' && 'prod' || 'staging' }}
       INFISICAL_IDENTITY_ID: ${{ github.ref_name == 'main' && '4fe0f200-7d25-4dab-a594-235cb857cc7c' || '567d962e-e8e6-4773-9301-0e86904c7ac3' }}
-      INFISICAL_SECRET_PATH: /github-actions
+      INFISICAL_SECRET_PATH: /deploy/github-actions
       COOLIFY_PROJECT_UUID: b4sha277lbvm1fbwnmeucz8d
       COOLIFY_ENVIRONMENT_UUID: ${{ github.ref_name == 'main' && 'b2lr47qjubg8bocj438u3brg' || 'gundabtcsxpr20csuh3zxdym' }}
       COOLIFY_ENVIRONMENT_NAME: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
