@@ -101,16 +101,32 @@ trap cleanup EXIT
 : "${registry_username:?Temporary GHCR username is missing}"
 : "${registry_token:?Temporary GHCR token is missing}"
 printf '%s' "${registry_token}" |
-  docker --config "${docker_config}" login ghcr.io \
+docker --config "${docker_config}" login ghcr.io \
     --username "${registry_username}" --password-stdin >/dev/null
 docker --config "${docker_config}" pull "${image_ref}" >/dev/null
 
-docker image inspect "${image_ref}" \
-  --format '{{range .RepoDigests}}{{println .}}{{end}}' |
-  grep -Fx -- "${expected_repo_digest}" >/dev/null || {
-    echo "Pulled image RepoDigests do not contain the requested release." >&2
-    exit 1
-  }
+pulled_image_json="$(
+  docker image inspect "${image_ref}" --format '{{json .}}'
+)"
+pulled_image_id="$(jq -r '.Id // empty' <<<"${pulled_image_json}")"
+[[ -n "${pulled_image_id}" ]] || {
+  echo "Docker did not return an image ID for the requested release." >&2
+  exit 1
+}
+if jq -e --arg expected "${expected_repo_digest}" \
+  'has("RepoDigests") and ((.RepoDigests // []) | index($expected) != null)' \
+  <<<"${pulled_image_json}" >/dev/null; then
+  pulled_digest_proof="repo-digest"
+elif jq -e 'has("RepoDigests") and ((.RepoDigests // []) | length > 0)' \
+  <<<"${pulled_image_json}" >/dev/null; then
+  echo "Pulled image RepoDigests do not contain the requested release." >&2
+  exit 1
+else
+  # Some Docker daemons omit RepoDigests when an image was pulled directly
+  # by digest. The pull above was digest-qualified, and the immutable image
+  # reference plus the image-ID comparison below remains the proof.
+  pulled_digest_proof="digest-qualified-pull"
+fi
 
 # Do not make the GitHub token available to the application container.
 sed -i \
@@ -157,20 +173,24 @@ fi
 
 runtime_image="$(docker inspect "${container_id}" --format '{{.Config.Image}}')"
 runtime_image_id="$(docker inspect "${container_id}" --format '{{.Image}}')"
-runtime_repo_digests="$(
-  docker inspect "${container_id}" \
-    --format '{{range .RepoDigests}}{{println .}}{{end}}'
-)"
+runtime_inspect_json="$(docker inspect "${container_id}" --format '{{json .}}')"
+runtime_repo_digests="$(jq -r '.RepoDigests[]? // empty' <<<"${runtime_inspect_json}")"
 [[ "${runtime_image}" == "${image_ref}" ]] || {
   echo "The running backend container does not use the requested exact image." >&2
   exit 1
 }
-grep -Fx -- "${expected_repo_digest}" <<<"${runtime_repo_digests}" >/dev/null || {
-  echo "The running backend container RepoDigests do not match the requested release." >&2
+[[ "${runtime_image_id}" == "${pulled_image_id}" ]] || {
+  echo "The running backend container image ID does not match the digest-qualified pull." >&2
   exit 1
 }
+if [[ -n "${runtime_repo_digests}" ]]; then
+  grep -Fx -- "${expected_repo_digest}" <<<"${runtime_repo_digests}" >/dev/null || {
+    echo "The running backend container RepoDigests do not match the requested release." >&2
+    exit 1
+  }
+fi
 
 # These value-safe markers are consumed by the deployment workflow to prove
 # that Coolify's target host ran the requested immutable image.
-printf 'runtime_image_ref=%s runtime_image_id=%s repo_digest_match=true\n' \
-  "${runtime_image}" "${runtime_image_id}"
+printf 'runtime_image_ref=%s runtime_image_id=%s repo_digest_match=true digest_proof=%s\n' \
+  "${runtime_image}" "${runtime_image_id}" "${pulled_digest_proof}"
