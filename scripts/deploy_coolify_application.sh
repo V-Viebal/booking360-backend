@@ -212,16 +212,23 @@ verify_runtime_identity() {
   local deployment_uuid="$1"
   local deployment_json="$2"
   local logs
-  logs="$(
-    jq -r '.logs // .output // .deployment_logs // .deploymentLogs // empty' \
-      <<<"${deployment_json}" 2>/dev/null || true
-  )"
-  if ! grep -F "runtime_image_ref=${IMAGE_REF}" <<<"${logs}" >/dev/null ||
-    ! grep -F 'repo_digest_match=true' <<<"${logs}" >/dev/null; then
-    echo "Coolify deployment logs did not prove exact runtime image identity." >&2
-    echo "deployment_uuid=${deployment_uuid}" >&2
-    return 1
-  fi
+  for attempt in $(seq 1 12); do
+    logs="$(
+      jq -r '.logs // .output // .deployment_logs // .deploymentLogs // empty' \
+        <<<"${deployment_json}" 2>/dev/null || true
+    )"
+    if grep -F "runtime_image_ref=${IMAGE_REF}" <<<"${logs}" >/dev/null &&
+      grep -F 'repo_digest_match=true' <<<"${logs}" >/dev/null; then
+      break
+    fi
+    [[ "${attempt}" -lt 12 ]] || {
+      echo "Coolify deployment logs did not prove exact runtime image identity." >&2
+      echo "deployment_uuid=${deployment_uuid}" >&2
+      return 1
+    }
+    sleep 5
+    deployment_json="$(get_deployment "${deployment_uuid}")"
+  done
   local runtime_image_id
   runtime_image_id="$(
     sed -n 's/.*runtime_image_id=\([^[:space:]]*\).*/\1/p' <<<"${logs}" | tail -n 1

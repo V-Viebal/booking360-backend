@@ -223,8 +223,8 @@ jobs:
       COOLIFY_SERVER_UUID: h0kgwwcg80s40wc8coc4og8w
       COOLIFY_APPLICATION_UUID: ${{ github.ref_name == 'main' && 'cfjkyqovn1xz6vnxfous8e4k' || 'cd0dxocgqg6m0miyruvjd18z' }}
       COOLIFY_APPLICATION_NAME: ${{ github.ref_name == 'main' && 'booking360-backend-production' || 'booking360-backend-staging' }}
-      COOLIFY_PUBLIC_DOMAIN: ${{ github.ref_name == 'main' && 'http://cfjkyqovn1xz6vnxfous8e4k.100.76.185.111.sslip.io' || 'http://cd0dxocgqg6m0miyruvjd18z.100.76.185.111.sslip.io' }}
-      BACKEND_HEALTH_URL: ${{ github.ref_name == 'main' && 'http://cfjkyqovn1xz6vnxfous8e4k.100.76.185.111.sslip.io/health' || 'http://cd0dxocgqg6m0miyruvjd18z.100.76.185.111.sslip.io/health' }}
+      COOLIFY_PUBLIC_DOMAIN: ${{ github.ref_name == 'main' && 'http://cfjkyqovn1xz6vnxfous8e4k.100.76.185.111.sslip.io' || 'https://api-booking360-staging.3rd.hmz.one' }}
+      BACKEND_HEALTH_URL: ${{ github.ref_name == 'main' && 'http://cfjkyqovn1xz6vnxfous8e4k.100.76.185.111.sslip.io/health' || 'https://api-booking360-staging.3rd.hmz.one/health' }}
       HEALTH_URL: ''
       COOLIFY_GIT_BRANCH: ${{ github.ref_name }}
       BOOKING360_BACKEND_COMPOSE_PROJECT: ${{ github.ref_name == 'main' && 'booking360-backend-production' || 'booking360-backend-staging' }}
@@ -402,7 +402,7 @@ jobs:
       COOLIFY_SERVER_UUID: h0kgwwcg80s40wc8coc4og8w
       COOLIFY_APPLICATION_UUID: ${{ github.ref_name == 'main' && 'cfjkyqovn1xz6vnxfous8e4k' || 'cd0dxocgqg6m0miyruvjd18z' }}
       COOLIFY_APPLICATION_NAME: ${{ github.ref_name == 'main' && 'booking360-backend-production' || 'booking360-backend-staging' }}
-      COOLIFY_PUBLIC_DOMAIN: ${{ github.ref_name == 'main' && 'http://cfjkyqovn1xz6vnxfous8e4k.100.76.185.111.sslip.io' || 'http://cd0dxocgqg6m0miyruvjd18z.100.76.185.111.sslip.io' }}
+      COOLIFY_PUBLIC_DOMAIN: ${{ github.ref_name == 'main' && 'http://cfjkyqovn1xz6vnxfous8e4k.100.76.185.111.sslip.io' || 'https://api-booking360-staging.3rd.hmz.one' }}
       COOLIFY_GIT_BRANCH: ${{ github.ref_name }}
       EXPECTED_GITHUB_REPOSITORY: V-Viebal/booking360-backend
     steps:
